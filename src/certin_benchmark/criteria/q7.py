@@ -143,7 +143,8 @@ def evaluate(ctx: Context):
                 if ent_scores or ent_epss:
                     chk.add("rating of the observation", not problems, "; ".join(problems))
             missing = sorted(set(cves) - {norm_cve(e.get("cve_id")) for e in details})
-            chk.add("completeness of entries", not missing, f"no cve_details entry for {', '.join(missing)}")
+            chk.add("completeness of entries", not missing,
+                    f"no cve_details entry for {', '.join(missing)}" if missing else "")
             if not details:
                 v = _version(o.get("cvss_version"), o.get("cvss_vector"))
                 _cvss_check(ctx, chk, "observation", o.get("cvss_score"), v, cves, when)

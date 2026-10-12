@@ -125,8 +125,11 @@ class ReferenceData:
         if nvd:
             return nvd, "nvd"
         rows = self.db.execute("SELECT cwe_id, assigner FROM cve_cwe WHERE cve_id = ?", (cve_id,)).fetchall()
-        cna = sorted({r["cwe_id"] for r in rows if r["assigner"] == "cna" and r["cwe_id"] is not None})
-        return (cna, "cna") if cna else ([], None)
+        for assigner in ("cna", "adp"):
+            ids = sorted({r["cwe_id"] for r in rows if r["assigner"] == assigner and r["cwe_id"] is not None})
+            if ids:
+                return ids, assigner
+        return [], None
 
     # ---- CVE List ------------------------------------------------------------------
     def cve_state(self, cve_id: str, as_of: _dt.date) -> str:
@@ -174,12 +177,20 @@ class ReferenceData:
                 header = first
             cols = [c.strip() for c in header.split(",")]
             reader = csv.DictReader(fh, fieldnames=cols)
+            has_pct = "percentile" in cols
             for row in reader:
                 try:
-                    scores[row["cve"].strip().upper()] = (float(row["epss"]), float(row["percentile"]))
-                except (KeyError, ValueError, AttributeError):
+                    pct = float(row["percentile"]) if has_pct else None
+                    scores[row["cve"].strip().upper()] = (float(row["epss"]), pct)
+                except (KeyError, ValueError, AttributeError, TypeError):
                     continue
-        day_data = EpssDay(key, model_version, scores, sorted(v[0] for v in scores.values()))
+        ordered = sorted(v[0] for v in scores.values())
+        if scores and not all(v[1] is not None for v in scores.values()):
+            # Files before 2021-09-01 publish no percentile: derive it by FIRST's definition, the
+            # proportion of scored CVEs with the same or a lower score.
+            n = len(ordered)
+            scores = {c: (e, p if p is not None else bisect.bisect_right(ordered, e) / n) for c, (e, p) in scores.items()}
+        day_data = EpssDay(key, model_version, scores, ordered)
         if len(self._epss_cache) > 8:
             self._epss_cache.pop(next(iter(self._epss_cache)))
         self._epss_cache[key] = day_data

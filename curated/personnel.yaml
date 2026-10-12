@@ -72,7 +72,8 @@ prohibited_categories:
   notice_period: '\bnotice period\b'
 
 # Q3 domain expertise: certification or qualification keyword -> engagement modules it supports.
-# "all" means relevant to every module.
+# "all" means relevant to every module. Names checked against the issuers on 12 October 2026; retired
+# credentials stay listed because holders keep them (marked "retired").
 qualification_modules:
   cissp: [all]
   cism: [compliance]
@@ -80,7 +81,9 @@ qualification_modules:
   ceh: [web, mobile, api, network]
   "ec-council certified ethical hacker": [web, mobile, api, network]
   oscp: [web, api, network]
-  osce: [web, api, network]
+  osce: [web, api, network]                 # retired by OffSec (course closed October 2020)
+  osce3: [web, api, network]
+  osed: [network]
   oswe: [web, api, source_code]
   osep: [network]
   gpen: [web, network]
@@ -91,6 +94,7 @@ qualification_modules:
   gcfe: [forensics]
   chfi: [forensics]
   encase: [forensics]
+  ence: [forensics]                         # EnCase Certified Examiner (OpenText)
   emapt: [mobile]
   gmob: [mobile]
   ewpt: [web]
@@ -101,17 +105,20 @@ qualification_modules:
   ccsp: [cloud]
   ccsk: [cloud]
   "aws certified security": [cloud]
-  "azure security engineer": [cloud]
+  "azure security engineer": [cloud]        # AZ-500 retired 31 August 2026; existing certificates valid to expiry
   "google professional cloud security": [cloud]
+  "professional cloud security engineer": [cloud]
   csslp: [source_code, web, cicd]
-  gssp: [source_code]
+  gssp: [source_code]                       # GIAC GSSP-Java and GSSP-.NET, retired
   "iso 27001 lead auditor": [compliance, critical_database]
   "iso/iec 27001 lead auditor": [compliance, critical_database]
   "iso 27001 la": [compliance]
   ccna: [network]
   ccnp: [network]
-  "ccna security": [network]
-  oracle certified: [critical_database]
+  "ccna security": [network]                # retired 2020
+  "ccna cybersecurity": [network]
+  "oracle certified professional": [critical_database]
+  "oracle database administration professional": [critical_database]
   ocp: [critical_database]
   "kubernetes security specialist": [cloud, cicd]
   cks: [cloud, cicd]

@@ -25,11 +25,11 @@ from __future__ import annotations
 import datetime as _dt
 import gzip
 import hashlib
-import io
 import json
 import os
 import re
 import shutil
+import tempfile
 import sqlite3
 import xml.etree.ElementTree as ET
 import zipfile
@@ -258,9 +258,20 @@ class PackageBuilder:
             if not meta_path.exists():
                 raise SourceError(f"missing integrity metadata for {feed.name}")
             meta = self._read_nvd_meta(meta_path)
-            raw = gzip.decompress(feed.read_bytes())
-            if hashlib.sha256(raw).hexdigest().lower() != meta.get("sha256", "").lower():
-                raise SourceError(f"SHA-256 mismatch for {feed.name}")
+            packed = feed.read_bytes()
+            raw = gzip.decompress(packed)
+            # The .meta `size` is the length of the uncompressed JSON. NVD's documentation does not state
+            # which bytes `sha256` covers; it is accepted when it matches the uncompressed JSON (observed)
+            # or the compressed file, and the match is recorded.
+            want = meta.get("sha256", "").lower()
+            if meta.get("size") and int(meta["size"]) != len(raw):
+                raise SourceError(f"{feed.name}: uncompressed size {len(raw)} differs from .meta size {meta['size']}")
+            if hashlib.sha256(raw).hexdigest() == want:
+                self._hash_basis = "uncompressed"
+            elif hashlib.sha256(packed).hexdigest() == want:
+                self._hash_basis = "compressed"
+            else:
+                raise SourceError(f"SHA-256 in {meta_path.name} matches neither the feed nor its decompressed JSON")
             latest_modified = max(filter(None, [latest_modified, meta.get("lastModifiedDate")]), default=None)
             data = json.loads(raw)
             for item in data.get("vulnerabilities", []):
@@ -310,11 +321,14 @@ class PackageBuilder:
                 continue  # unchanged: the earlier assignment continues to apply
             for w in ws or {None}:
                 self.db.execute("INSERT INTO cve_cwe VALUES (?, ?, 'nvd', ?)", (cid, w, pkg))
-        return {"records": count, "publisher_version": latest_modified, "retrieved_at": _mtime(feeds[-1])}
+        return {"records": count, "publisher_version": latest_modified, "retrieved_at": _mtime(feeds[-1]),
+                "sha256_basis": getattr(self, "_hash_basis", None)}
 
     @staticmethod
     def _history_vector(value: str, version: str) -> str | None:
-        """Change-history values read like 'NIST AV:N/AC:L/...' or 'NIST (CVSS:3.1/AV:N/...)'."""
+        """Change-history values seen on the NVD CVE Change History API: 'NIST AV:N/AC:L/...' (2021),
+        a plain 'AV:N/AC:L/...' (NVD from 2026, and ADP sources), and 'NIST (AV:N/AC:M/Au:N/...)' (CVSS v2,
+        which is ignored). A rescore appears as Added (new value) and Removed (old value) in one change."""
         m = re.search(r"(CVSS:\d\.\d/)?((?:[A-Z]{1,3}:[A-Z]/)*[A-Z]{1,3}:[A-Z])(?![A-Za-z])", value)
         if not m or "AV:" not in m.group(2):
             return None
@@ -361,11 +375,15 @@ class PackageBuilder:
                 for n in zf.namelist():
                     if re.search(r"CVE-\d{4}-\d+\.json$", n):
                         yield json.loads(zf.read(n))
-                    elif n.endswith(".zip"):  # nested bulk archive as published
-                        with zipfile.ZipFile(io.BytesIO(zf.read(n))) as inner:
-                            for m in inner.namelist():
-                                if re.search(r"CVE-\d{4}-\d+\.json$", m):
-                                    yield json.loads(inner.read(m))
+                    elif n.endswith(".zip"):  # bulk release: one inner cves.zip of about 700 MB
+                        with tempfile.TemporaryDirectory(dir=self.out) as tmp:
+                            inner_path = Path(tmp) / "inner.zip"
+                            with zf.open(n) as src, open(inner_path, "wb") as dst:
+                                shutil.copyfileobj(src, dst, 1 << 20)
+                            with zipfile.ZipFile(inner_path) as inner:
+                                for m in inner.namelist():
+                                    if re.search(r"CVE-\d{4}-\d+\.json$", m):
+                                        yield json.loads(inner.read(m))
         for p in sorted(d.rglob("CVE-*.json")):
             yield json.loads(p.read_text())
 
@@ -381,17 +399,20 @@ class PackageBuilder:
             latest = max(latest, str(md.get("dateUpdated") or md.get("datePublished") or ""))
             self.db.execute("INSERT OR REPLACE INTO cve_list VALUES (?, ?, ?, ?, ?)",
                             (cid, md.get("state"), md.get("dateReserved"), md.get("datePublished"), md.get("dateRejected")))
-            cna = rec.get("containers", {}).get("cna", {})
-            for pt in cna.get("problemTypes", []):
-                for desc in pt.get("descriptions", []):
-                    m = re.match(r"CWE-(\d+)$", str(desc.get("cweId", "")))
-                    if m:
-                        self.db.execute("INSERT INTO cve_cwe VALUES (?, ?, 'cna', NULL)", (cid, int(m.group(1))))
-            for metric in cna.get("metrics", []):
-                for key, version in (("cvssV3_1", "3.1"), ("cvssV4_0", "4.0")):
-                    if key in metric:
-                        self.db.execute("INSERT INTO cna_cvss VALUES (?, ?, ?, ?)",
-                                        (cid, version, metric[key].get("baseScore"), metric[key].get("vectorString")))
+            containers = rec.get("containers", {})
+            # The CNA container first; Authorised Data Publisher containers (for example CISA-ADP) after it
+            for assigner, cont in [("cna", containers.get("cna", {}))] + [("adp", a) for a in containers.get("adp", [])]:
+                for pt in cont.get("problemTypes", []):
+                    for desc in pt.get("descriptions", []):
+                        m = re.match(r"CWE-(\d+)$", str(desc.get("cweId", "")))
+                        if m:
+                            self.db.execute("INSERT INTO cve_cwe VALUES (?, ?, ?, NULL)", (cid, int(m.group(1)), assigner))
+                if assigner == "cna":
+                    for metric in cont.get("metrics", []):
+                        for key, version in (("cvssV3_1", "3.1"), ("cvssV4_0", "4.0"), ("cvssV3_0", "3.0")):
+                            if key in metric:
+                                self.db.execute("INSERT INTO cna_cvss VALUES (?, ?, ?, ?)",
+                                                (cid, version, metric[key].get("baseScore"), metric[key].get("vectorString")))
             self._raw("cve_list", cid, rec)
         if count == 0:
             raise SourceError("no CVE records parsed")
@@ -402,12 +423,14 @@ class PackageBuilder:
         p = self.staging / "kev" / "known_exploited_vulnerabilities.json"
         data = json.loads(p.read_text())
         vulns = data.get("vulnerabilities")
-        if not isinstance(vulns, list) or "catalogVersion" not in data:
-            raise SourceError("KEV catalogue does not conform to the published schema")
-        if data.get("count") is not None and int(data["count"]) != len(vulns):
+        # Required properties and patterns from CISA's known_exploited_vulnerabilities_schema.json
+        missing = [k for k in ("catalogVersion", "dateReleased", "count", "vulnerabilities") if k not in data]
+        if missing or not isinstance(vulns, list):
+            raise SourceError(f"KEV catalogue does not conform to the published schema (missing {missing})")
+        if int(data["count"]) != len(vulns):
             raise SourceError("KEV count does not equal the number of entries")
         for v in vulns:
-            if not re.match(r"^CVE-\d{4}-\d{4,}$", str(v.get("cveID", ""))) or not re.match(r"^\d{4}-\d{2}-\d{2}$", str(v.get("dateAdded", ""))):
+            if not re.match(r"^CVE-[0-9]{4}-[0-9]{4,19}$", str(v.get("cveID", ""))) or not re.match(r"^\d{4}-\d{2}-\d{2}$", str(v.get("dateAdded", ""))):
                 raise SourceError(f"KEV entry does not conform to the schema: {v.get('cveID')}")
             self.db.execute("INSERT OR REPLACE INTO kev VALUES (?, ?)", (v["cveID"].upper(), v["dateAdded"]))
         return {"records": len(vulns), "publisher_version": data.get("catalogVersion"), "retrieved_at": _mtime(p)}
@@ -499,14 +522,20 @@ class PackageBuilder:
         staged = sorted((self.staging / "epss").glob("epss_scores-*.csv.gz")) if (self.staging / "epss").exists() else []
         models = {}
         for f in staged:  # verify each newly staged file by full parse
+            # Published formats: from 2022-02-04 a '#model_version:...,score_date:...' line precedes the
+            # header; earlier files have none. Files before 2021-09-01 have no percentile column.
             with gzip.open(f, "rt") as fh:
                 first = fh.readline()
-                if not first.startswith("#model_version:"):
-                    raise SourceError(f"{f.name}: first line does not identify the model version")
-                models[f.name] = first.strip()
-                header = fh.readline().strip().split(",")
-                if header[:3] != ["cve", "epss", "percentile"]:
-                    raise SourceError(f"{f.name}: unexpected header")
+                if first.startswith("#"):
+                    if not first.startswith("#model_version:"):
+                        raise SourceError(f"{f.name}: comment line does not identify the model version")
+                    models[f.name] = first.strip()
+                    header = fh.readline().strip().split(",")
+                else:
+                    models[f.name] = "#model_version:unrecorded (file predates 2022-02-04)"
+                    header = first.strip().split(",")
+                if header[:2] != ["cve", "epss"] or (len(header) > 2 and header[2] != "percentile"):
+                    raise SourceError(f"{f.name}: unexpected header {header}")
                 n = sum(1 for _ in fh)
                 if n < 1000:
                     raise SourceError(f"{f.name}: only {n} rows")
