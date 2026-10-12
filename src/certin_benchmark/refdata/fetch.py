@@ -17,6 +17,17 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+# Distribution points, checked on 12 October 2026:
+#   NVD feeds and .meta files for 2002 to 2026, plus modified and recent: nvd.nist.gov/feeds/json/cve/2.0/
+#   NVD CVE Change History API: response format confirmed on a live query. The 120-day window, page size of
+#     5000, 'apiKey' header and request pacing below follow NVD's developer guide as previously published
+#     and could not be re-read on 12 October 2026 (the pages render client-side); confirm before first use.
+#   CVE List bulk release: asset '<date>_all_CVEs_at_midnight.zip.zip' holding one inner 'cves.zip'
+#   EPSS: epss.empiricalsecurity.com, linked from first.org/epss/data_stats (epss.cyentia.com redirects there);
+#     archive from 2021-04-14
+#   KEV: cisa.gov feed, mirrored by CISA at github.com/cisagov/kev-data
+#   CWE: cwe.mitre.org/data/xml/cwec_v{X.Y}.xml.zip; release dates are not on the archive page and are
+#     taken from the CWE news archive (cwe.mitre.org/news/archives/)
 DISTRIBUTION = {
     "nvd_feed": "https://nvd.nist.gov/feeds/json/cve/2.0/{name}",
     "nvd_history_api": "https://services.nvd.nist.gov/rest/json/cvehistory/2.0",

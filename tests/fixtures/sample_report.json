@@ -7,10 +7,19 @@
     "report_version": "2.0",
     "report_status": "Final",
     "audit_type": "Web Application Security Audit",
-    "audit_types": ["Web Application Security Audit", "VAPT"],
-    "audit_period": {"from": "2026-07-01", "to": "2026-07-21"},
+    "audit_types": [
+      "Web Application Security Audit",
+      "VAPT"
+    ],
+    "audit_period": {
+      "from": "2026-07-01",
+      "to": "2026-07-21"
+    },
     "classification": "Confidential",
-    "auditing_organization": {"name": "Example Assurance Pvt Ltd", "certin_empanelment_id": "CERTIN-EMP-0999"},
+    "auditing_organization": {
+      "name": "Example Assurance Pvt Ltd",
+      "certin_empanelment_id": "CERTIN-EMP-0999"
+    },
     "auditee_organization": {
       "name": "Department of Example Services",
       "entity_type": "Central Ministry/Department",
@@ -23,68 +32,229 @@
     "document_title": "Web Application Security Audit Report",
     "document_id": "EAPL/DES/2026/014",
     "document_version": "2.0",
-    "prepared_by": {"name": "Asha Verma", "auditing_team_sr_no": 1},
-    "reviewed_by": {"name": "Rohit Mehra", "auditing_team_sr_no": 3},
-    "approved_by": {"name": "Sunil Kapoor", "auditing_team_sr_no": 4},
-    "released_by": {"name": "Sunil Kapoor", "auditing_team_sr_no": 4},
+    "prepared_by": {
+      "name": "Asha Verma",
+      "auditing_team_sr_no": 1
+    },
+    "reviewed_by": {
+      "name": "Rohit Mehra",
+      "auditing_team_sr_no": 3
+    },
+    "approved_by": {
+      "name": "Sunil Kapoor",
+      "auditing_team_sr_no": 4
+    },
+    "released_by": {
+      "name": "Sunil Kapoor",
+      "auditing_team_sr_no": 4
+    },
     "release_date": "2026-08-20",
     "change_history": [
-      {"version": "1.0", "date": "2026-07-24", "remarks": "Initial report"},
-      {"version": "2.0", "date": "2026-08-20", "remarks": "Final report after revalidation"}
+      {
+        "version": "1.0",
+        "date": "2026-07-24",
+        "remarks": "Initial report"
+      },
+      {
+        "version": "2.0",
+        "date": "2026-08-20",
+        "remarks": "Final report after revalidation"
+      }
     ],
-    "distribution_list": [{"name": "CISO", "organization": "Department of Example Services", "designation": "CISO", "email": "ciso@example.gov.in"}]
+    "distribution_list": [
+      {
+        "name": "CISO",
+        "organization": "Department of Example Services",
+        "designation": "CISO",
+        "email": "ciso@example.gov.in"
+      }
+    ]
   },
   "audit_certificate": {
     "present": true,
     "certificate_id": "EAPL/CERT/2026/014",
     "issue_date": "2026-08-20",
-    "signed_by_lead_auditor": {"name": "Asha Verma", "auditing_team_sr_no": 1},
-    "signed_by_head_of_organization": {"name": "Sunil Kapoor", "auditing_team_sr_no": 4},
-    "certified_asset_sr_nos": [1, 2],
+    "signed_by_lead_auditor": {
+      "name": "Asha Verma",
+      "auditing_team_sr_no": 1
+    },
+    "signed_by_head_of_organization": {
+      "name": "Sunil Kapoor",
+      "auditing_team_sr_no": 4
+    },
+    "certified_asset_sr_nos": [
+      1,
+      2
+    ],
     "certified_environment": "Production",
     "statement": "The application, its backend databases and scripts were found free from known exploitable vulnerabilities and malicious code as on the date of revalidation."
   },
   "engagement_scope": {
     "assets": [
-      {"sr_no": 1, "asset_description": "Citizen Services Portal", "url": "https://services.example.gov.in", "criticality": "Critical",
-       "public_ip": "203.0.113.10", "in_scope_functions": "Citizen login, application submission, admin dashboard for officer and admin roles",
-       "asset_type": "Web Application", "environment": "Production", "hosting": "Third-party hosted",
-       "version": "4.2.1", "build": "2026.07.01", "hash": "9f2c1a7b1e6d0f5c8a3b4d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a", "hash_algorithm": "SHA-256", "tested": true},
-      {"sr_no": 2, "asset_description": "Portal API gateway", "url": "https://api.services.example.gov.in", "criticality": "High",
-       "in_scope_functions": "REST API used by the portal for user and admin operations",
-       "asset_type": "API", "environment": "Production", "hosting": "Third-party hosted",
-       "version": "1.8.0", "hash": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809", "hash_algorithm": "SHA-256", "tested": true},
-      {"sr_no": 3, "asset_description": "Legacy reports module", "url": "https://reports.example.gov.in", "criticality": "Medium",
-       "asset_type": "Web Application", "environment": "Production", "hosting": "Self-hosted", "tested": false}
+      {
+        "sr_no": 1,
+        "asset_description": "Citizen Services Portal",
+        "url": "https://services.example.gov.in",
+        "criticality": "Critical",
+        "public_ip": "203.0.113.10",
+        "in_scope_functions": "Citizen login, application submission, admin dashboard for officer and admin roles",
+        "asset_type": "Web Application",
+        "environment": "Production",
+        "hosting": "Third-party hosted",
+        "version": "4.2.1",
+        "build": "2026.07.01",
+        "hash": "9f2c1a7b1e6d0f5c8a3b4d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a",
+        "hash_algorithm": "SHA-256",
+        "tested": true
+      },
+      {
+        "sr_no": 2,
+        "asset_description": "Portal API gateway",
+        "url": "https://api.services.example.gov.in",
+        "criticality": "High",
+        "in_scope_functions": "REST API used by the portal for user and admin operations",
+        "asset_type": "API",
+        "environment": "Production",
+        "hosting": "Third-party hosted",
+        "version": "1.8.0",
+        "hash": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+        "hash_algorithm": "SHA-256",
+        "tested": true
+      },
+      {
+        "sr_no": 3,
+        "asset_description": "Legacy reports module",
+        "url": "https://reports.example.gov.in",
+        "criticality": "Medium",
+        "asset_type": "Web Application",
+        "environment": "Production",
+        "hosting": "Self-hosted",
+        "tested": false
+      }
     ],
     "scope_updated_till": "2026-06-30",
-    "exclusions": ["Denial of service testing"],
+    "exclusions": [
+      "Denial of service testing"
+    ],
     "testing_credentials": [
-      {"role": "citizen user", "account_identifier": "test.citizen01", "auth_type": "Password and OTP", "purpose": "Authenticated testing as citizen"},
-      {"role": "officer", "account_identifier": "test.officer01", "auth_type": "Password and OTP", "purpose": "Officer workflows"},
-      {"role": "admin", "account_identifier": "test.admin01", "auth_type": "Password and hardware token", "purpose": "Administrative functions"}
+      {
+        "role": "citizen user",
+        "account_identifier": "test.citizen01",
+        "auth_type": "Password and OTP",
+        "purpose": "Authenticated testing as citizen"
+      },
+      {
+        "role": "officer",
+        "account_identifier": "test.officer01",
+        "auth_type": "Password and OTP",
+        "purpose": "Officer workflows"
+      },
+      {
+        "role": "admin",
+        "account_identifier": "test.admin01",
+        "auth_type": "Password and hardware token",
+        "purpose": "Administrative functions"
+      }
     ],
-    "inaccessible_assets": [{"asset_sr_no": 3, "reason": "Module decommissioned by the auditee during the engagement", "reported_to_certin": true}],
+    "inaccessible_assets": [
+      {
+        "asset_sr_no": 3,
+        "reason": "Module decommissioned by the auditee during the engagement",
+        "reported_to_certin": true
+      }
+    ],
     "scope_categories": [
-      {"category": "Web Application", "status": "Covered"},
-      {"category": "Application Security", "status": "Covered"},
-      {"category": "API", "status": "Covered"},
-      {"category": "Database and Hosting", "status": "Covered"},
-      {"category": "Source Code", "status": "Excluded", "reason": "Source code not provided by the auditee"},
-      {"category": "Systems", "status": "Covered"},
-      {"category": "Network Infrastructure", "status": "Not applicable", "reason": "Hosted by the cloud provider"},
-      {"category": "Third-party and Supply Chain Risk", "status": "Excluded", "reason": "Hosting provider assessed under a separate audit"}
+      {
+        "category": "Web Application",
+        "status": "Covered"
+      },
+      {
+        "category": "Application Security",
+        "status": "Covered"
+      },
+      {
+        "category": "API",
+        "status": "Covered"
+      },
+      {
+        "category": "Database and Hosting",
+        "status": "Covered"
+      },
+      {
+        "category": "Source Code",
+        "status": "Excluded",
+        "reason": "Source code not provided by the auditee"
+      },
+      {
+        "category": "Systems",
+        "status": "Covered"
+      },
+      {
+        "category": "Network Infrastructure",
+        "status": "Not applicable",
+        "reason": "Hosted by the cloud provider"
+      },
+      {
+        "category": "Third-party and Supply Chain Risk",
+        "status": "Excluded",
+        "reason": "Hosting provider assessed under a separate audit"
+      }
     ],
-    "environments_covered": ["Production"],
+    "environments_covered": [
+      "Production"
+    ],
     "production_tested": true,
     "non_production_statement": "",
-    "secure_design_confirmation": {"confirmed": true, "statement": "The auditee confirmed by letter dated 28 June 2026 that the portal was developed following the CERT-In application security guidelines."}
+    "secure_design_confirmation": {
+      "confirmed": true,
+      "statement": "The auditee confirmed by letter dated 28 June 2026 that the portal was developed following the CERT-In application security guidelines."
+    }
   },
   "auditing_team": [
-    {"sr_no": 1, "name": "Asha Verma", "designation": "Lead Consultant", "email": "asha@example-assurance.in", "certifications": "OSCP, CEH", "role": "Lead Auditor", "in_audit_team": true, "qualifications": "B.Tech Computer Science", "experience_years": 8},
-    {"sr_no": 2, "name": "Karan Iyer", "designation": "Security Consultant", "email": "karan@example-assurance.in", "certifications": "eWPT", "role": "Auditor", "in_audit_team": true, "qualifications": "M.Tech Information Security", "experience_years": 4},
-    {"sr_no": 3, "name": "Rohit Mehra", "designation": "Senior Manager", "email": "rohit@example-assurance.in", "certifications": "CISSP", "role": "Reviewer", "in_audit_team": false, "qualifications": "MBA, B.E.", "experience_years": 14},
-    {"sr_no": 4, "name": "Sunil Kapoor", "designation": "Managing Director", "email": "md@example-assurance.in", "certifications": "CISA", "role": "Head of Organization", "in_audit_team": false, "qualifications": "B.E.", "experience_years": 22}
+    {
+      "sr_no": 1,
+      "name": "Asha Verma",
+      "designation": "Lead Consultant",
+      "email": "asha@example-assurance.in",
+      "certifications": "OSCP, CEH",
+      "role": "Lead Auditor",
+      "in_audit_team": true,
+      "qualifications": "B.Tech Computer Science",
+      "experience_years": 8
+    },
+    {
+      "sr_no": 2,
+      "name": "Karan Iyer",
+      "designation": "Security Consultant",
+      "email": "karan@example-assurance.in",
+      "certifications": "eWPT",
+      "role": "Auditor",
+      "in_audit_team": true,
+      "qualifications": "M.Tech Information Security",
+      "experience_years": 4
+    },
+    {
+      "sr_no": 3,
+      "name": "Rohit Mehra",
+      "designation": "Senior Manager",
+      "email": "rohit@example-assurance.in",
+      "certifications": "CISSP",
+      "role": "Reviewer",
+      "in_audit_team": false,
+      "qualifications": "MBA, B.E.",
+      "experience_years": 14
+    },
+    {
+      "sr_no": 4,
+      "name": "Sunil Kapoor",
+      "designation": "Managing Director",
+      "email": "md@example-assurance.in",
+      "certifications": "CISA",
+      "role": "Head of Organization",
+      "in_audit_team": false,
+      "qualifications": "B.E.",
+      "experience_years": 22
+    }
   ],
   "audit_timeline": {
     "assessment_start_date": "2026-07-01",
@@ -96,50 +266,165 @@
     "exit_conference_date": "2026-07-22"
   },
   "methodology": {
-    "standards_referred": ["OWASP WSTG v4.2", "OWASP ASVS 4.0.3", "Cyber Security Audit Baseline Requirements", "OWASP Top 10 2021"],
+    "standards_referred": [
+      "OWASP WSTG v4.2",
+      "OWASP ASVS 4.0.3",
+      "Cyber Security Audit Baseline Requirements",
+      "OWASP Top 10 2021"
+    ],
     "standards_detail": [
-      {"name": "OWASP WSTG", "version": "4.2", "applied_to_asset_sr_nos": [1, 2]},
-      {"name": "OWASP ASVS", "version": "4.0.3", "applied_to_asset_sr_nos": [1, 2]}
+      {
+        "name": "OWASP WSTG",
+        "version": "4.2",
+        "applied_to_asset_sr_nos": [
+          1,
+          2
+        ]
+      },
+      {
+        "name": "OWASP ASVS",
+        "version": "4.0.3",
+        "applied_to_asset_sr_nos": [
+          1,
+          2
+        ]
+      }
     ],
     "narrative": "The portal (asset 1) and its API gateway (asset 2) were tested in production against OWASP WSTG test cases for authentication, session management, input validation and business logic, and against ASVS level 2 requirements. The legacy reports module (asset 3) was excluded after decommissioning.",
     "manual_testing": "Manual testing of authentication, authorisation between citizen, officer and admin roles, and business logic of the application submission workflow using an intercepting proxy.",
     "automated_testing": "Automated scanning with Burp Suite Professional and Nmap, with all scanner findings manually confirmed.",
     "sampling_decisions": "All 46 citizen-facing functions were tested; officer functions were sampled at 60 per cent, prioritising those that modify application status.",
     "prioritisation_approach": "Functions handling personal data and payment references were tested first.",
-    "limitations": ["Testing windows were restricted to 22:00 to 06:00 on production.", "Source code was not made available."],
-    "severity_scheme": {"basis": "CVSS v3.1", "description": "Severity follows the CVSS v3.1 qualitative rating."},
-    "certin_advisories_referred": ["CIAD-2021-0381"]
+    "limitations": [
+      "Testing windows were restricted to 22:00 to 06:00 on production.",
+      "Source code was not made available."
+    ],
+    "severity_scheme": {
+      "basis": "CVSS v3.1",
+      "description": "Severity follows the CVSS v3.1 qualitative rating."
+    },
+    "certin_advisories_referred": [
+      "CIVN-2021-0000"
+    ]
   },
   "tools_used": [
-    {"sr_no": 1, "tool_name": "Burp Suite Professional", "version": "2026.6", "license_type": "Licensed", "purpose": "Intercepting proxy and scanner", "approved_by_auditee": true},
-    {"sr_no": 2, "tool_name": "Nmap", "version": "7.95", "license_type": "Open Source", "purpose": "Port and service discovery", "approved_by_auditee": true}
+    {
+      "sr_no": 1,
+      "tool_name": "Burp Suite Professional",
+      "version": "2026.6",
+      "license_type": "Licensed",
+      "purpose": "Intercepting proxy and scanner",
+      "approved_by_auditee": true
+    },
+    {
+      "sr_no": 2,
+      "tool_name": "Nmap",
+      "version": "7.95",
+      "license_type": "Open Source",
+      "purpose": "Port and service discovery",
+      "approved_by_auditee": true
+    }
   ],
-  "tools_ipr_license_confirmation": {"confirmed": true, "statement": "All tools used are licensed or open source and used in accordance with their licences."},
+  "tools_ipr_license_confirmation": {
+    "confirmed": true,
+    "statement": "All tools used are licensed or open source and used in accordance with their licences."
+  },
   "executive_summary": {
     "total_findings": 3,
-    "severity_count": {"critical": 0, "high": 2, "medium": 0, "low": 1},
-    "narrative": "The audit found two high-risk weaknesses. A flaw in how citizen applications are retrieved allowed one citizen to read another citizen's application, exposing personal data. An outdated web server component could allow an attacker to read files from the server. Both have been fixed and verified. One low-risk weakness remains open.",
-    "overall_security_posture": {"rating": "Moderate", "description": "After remediation the portal is in a moderate security posture; one low-risk issue remains."},
+    "severity_count": {
+      "critical": 1,
+      "high": 1,
+      "medium": 0,
+      "low": 1
+    },
+    "narrative": "The audit found one critical and one high-risk weakness. A flaw in how citizen applications are retrieved allowed one citizen to read another citizen's application, exposing personal data. An outdated web server component could allow an attacker to read files from the server and run commands on it. Both have been fixed and verified. One low-risk weakness remains open.",
+    "overall_security_posture": {
+      "rating": "Moderate",
+      "description": "After remediation the portal is in a moderate security posture; one low-risk issue remains."
+    },
     "business_risk_summary": "Before remediation, personal data of all citizens could have been exposed, with legal and reputational consequences under the DPDP Act.",
-    "key_recommendations": ["Retain object-level authorisation checks in the API (owner: application team, by 30 September 2026)", "Adopt a monthly patch cycle for web server components (owner: hosting team)"],
+    "key_recommendations": [
+      "Retain object-level authorisation checks in the API (owner: application team, by 30 September 2026)",
+      "Adopt a monthly patch cycle for web server components (owner: hosting team)"
+    ],
     "summary_table": [
-      {"sr_no": 1, "finding_id": "WASA-01", "affected_asset": "https://api.services.example.gov.in", "title": "Insecure direct object reference in application retrieval", "cwe": "CWE-639", "severity": "High", "status": "Closed", "new_or_repeat": "New"},
-      {"sr_no": 2, "finding_id": "WASA-02", "affected_asset": "https://services.example.gov.in", "title": "Path traversal in Apache HTTP Server 2.4.49", "cwe": "CWE-22", "severity": "High", "status": "Closed", "new_or_repeat": "Repeat"},
-      {"sr_no": 3, "finding_id": "WASA-03", "affected_asset": "https://services.example.gov.in", "title": "Missing Content-Security-Policy header", "cwe": "CWE-1021", "severity": "Low", "status": "Open", "new_or_repeat": "New"}
+      {
+        "sr_no": 1,
+        "finding_id": "WASA-01",
+        "affected_asset": "https://api.services.example.gov.in",
+        "title": "Insecure direct object reference in application retrieval",
+        "cwe": "CWE-639",
+        "severity": "High",
+        "status": "Closed",
+        "new_or_repeat": "New"
+      },
+      {
+        "sr_no": 2,
+        "finding_id": "WASA-02",
+        "affected_asset": "https://services.example.gov.in",
+        "title": "Path traversal in Apache HTTP Server 2.4.49",
+        "cwe": "CWE-22",
+        "severity": "Critical",
+        "status": "Closed",
+        "new_or_repeat": "Repeat"
+      },
+      {
+        "sr_no": 3,
+        "finding_id": "WASA-03",
+        "affected_asset": "https://services.example.gov.in",
+        "title": "Missing Content-Security-Policy header",
+        "cwe": "CWE-1021",
+        "severity": "Low",
+        "status": "Open",
+        "new_or_repeat": "New"
+      }
     ]
   },
   "detailed_observations": [
     {
-      "finding_id": "WASA-01", "title": "Insecure direct object reference in application retrieval", "status": "Closed", "severity": "High",
-      "impact_level": "Major", "likelihood_level": "Easy", "cve_id": [], "cve_not_applicable": true,
-      "cvss_score": 7.5, "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N", "cvss_version": "3.1",
+      "finding_id": "WASA-01",
+      "title": "Insecure direct object reference in application retrieval",
+      "status": "Closed",
+      "severity": "High",
+      "impact_level": "Major",
+      "likelihood_level": "Easy",
+      "cve_id": [],
+      "cve_not_applicable": true,
+      "cvss_score": 7.5,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "cvss_version": "3.1",
       "severity_rationale": "Network reachable without user interaction; any authenticated citizen can read other citizens' applications, so confidentiality impact is high. Privileges were scored as none because self-registration is open to anyone.",
-      "observation_date": "2026-07-08", "cwe": ["CWE-639"], "affected_asset": ["https://api.services.example.gov.in/v1/applications/{id}"], "affected_asset_sr_nos": [2],
+      "observation_date": "2026-07-08",
+      "cwe": [
+        "CWE-639"
+      ],
+      "affected_asset": [
+        "https://api.services.example.gov.in/v1/applications/{id}"
+      ],
+      "affected_asset_sr_nos": [
+        2
+      ],
       "observation_description": "The endpoint GET /v1/applications/{id} returns the application of any citizen when the numeric identifier is changed, without verifying that the application belongs to the requesting user.",
       "preconditions": "A citizen account, obtainable through open self-registration.",
       "proof_of_concept": [
-        {"sr_no": 1, "type": "text", "reference": "GET /v1/applications/10452 HTTP/1.1 (session of citizen A) -> 200 OK, body contains name and Aadhaar-masked number of citizen B", "capture_date": "2026-07-08", "is_retest": false, "redacted": "Yes", "description": "Request with citizen A's session token for citizen B's application, captured in Burp Suite."},
-        {"sr_no": 2, "type": "text", "reference": "GET /v1/applications/10452 HTTP/1.1 (session of citizen A) -> 403 Forbidden", "capture_date": "2026-08-11", "is_retest": true, "redacted": "Yes", "description": "Retest after fix: the same request is refused."}
+        {
+          "sr_no": 1,
+          "type": "text",
+          "reference": "GET /v1/applications/10452 HTTP/1.1 (session of citizen A) -> 200 OK, body contains name and Aadhaar-masked number of citizen B",
+          "capture_date": "2026-07-08",
+          "is_retest": false,
+          "redacted": "Yes",
+          "description": "Request with citizen A's session token for citizen B's application, captured in Burp Suite."
+        },
+        {
+          "sr_no": 2,
+          "type": "text",
+          "reference": "GET /v1/applications/10452 HTTP/1.1 (session of citizen A) -> 403 Forbidden",
+          "capture_date": "2026-08-11",
+          "is_retest": true,
+          "redacted": "Yes",
+          "description": "Retest after fix: the same request is refused."
+        }
       ],
       "impact": "Disclosure of personal data of every citizen with an application on the portal.",
       "likely_root_cause": "Authorisation is enforced only at the user interface; the API does not check ownership of the object requested.",
@@ -147,43 +432,124 @@
       "reference": "OWASP WSTG-ATHZ-04; ASVS V4.2.1",
       "new_or_repeat": "New",
       "cve_details": [],
-      "test_environment": "Production", "closure_timeline": "Immediate", "notified_on": "2026-07-08", "notification_ref": "EAPL/DES/NOTIF/01", "immediate_risk": true,
-      "risk_treatment": {"decision": "Remediate"}
+      "test_environment": "Production",
+      "closure_timeline": "Immediate",
+      "notified_on": "2026-07-08",
+      "notification_ref": "EAPL/DES/NOTIF/01",
+      "immediate_risk": true,
+      "risk_treatment": {
+        "decision": "Remediate"
+      }
     },
     {
-      "finding_id": "WASA-02", "title": "Path traversal in Apache HTTP Server 2.4.49", "status": "Closed", "severity": "High",
-      "impact_level": "Major", "likelihood_level": "Easy", "cve_id": ["CVE-2021-41773"], "cve_not_applicable": false,
-      "cvss_score": 7.5, "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N", "cvss_version": "3.1",
+      "finding_id": "WASA-02",
+      "title": "Path traversal in Apache HTTP Server 2.4.49",
+      "status": "Closed",
+      "severity": "Critical",
+      "impact_level": "Major",
+      "likelihood_level": "Easy",
+      "cve_id": [
+        "CVE-2021-41773"
+      ],
+      "cve_not_applicable": false,
+      "cvss_score": 9.8,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "cvss_version": "3.1",
       "reported_epss_score": 0.944,
-      "observation_date": "2026-07-09", "cwe": ["CWE-22"], "affected_asset": ["https://services.example.gov.in"], "affected_asset_sr_nos": [1],
+      "observation_date": "2026-07-09",
+      "cwe": [
+        "CWE-22"
+      ],
+      "affected_asset": [
+        "https://services.example.gov.in"
+      ],
+      "affected_asset_sr_nos": [
+        1
+      ],
       "observation_description": "The portal runs Apache HTTP Server 2.4.49, in which a crafted URL with encoded dot segments maps to files outside the document root.",
       "preconditions": "None; the server is reachable from the internet.",
       "proof_of_concept": [
-        {"sr_no": 1, "type": "text", "reference": "GET /cgi-bin/.%2e/.%2e/.%2e/etc/hostname -> 200 OK, body: web01", "capture_date": "2026-07-09", "is_retest": false, "redacted": "No", "description": "Traversal request returns the server host name."},
-        {"sr_no": 2, "type": "text", "reference": "GET /cgi-bin/.%2e/.%2e/.%2e/etc/hostname -> 400 Bad Request; Server: Apache/2.4.62", "capture_date": "2026-08-12", "is_retest": true, "redacted": "No", "description": "Retest after upgrade to 2.4.62."}
+        {
+          "sr_no": 1,
+          "type": "text",
+          "reference": "GET /cgi-bin/.%2e/.%2e/.%2e/etc/hostname -> 200 OK, body: web01",
+          "capture_date": "2026-07-09",
+          "is_retest": false,
+          "redacted": "No",
+          "description": "Traversal request returns the server host name."
+        },
+        {
+          "sr_no": 2,
+          "type": "text",
+          "reference": "GET /cgi-bin/.%2e/.%2e/.%2e/etc/hostname -> 400 Bad Request; Server: Apache/2.4.62",
+          "capture_date": "2026-08-12",
+          "is_retest": true,
+          "redacted": "No",
+          "description": "Retest after upgrade to 2.4.62."
+        }
       ],
-      "impact": "Disclosure of files readable by the web server and, where CGI is enabled, remote code execution.",
+      "impact": "Disclosure of files readable by the web server and remote code execution where CGI is enabled.",
       "likely_root_cause": "Web server component not patched since 2021.",
       "recommendation": "Upgrade Apache HTTP Server to 2.4.51 or later (2.4.62 recommended) and set 'Require all denied' on the root directory.",
-      "reference": "CERT-In advisory CIAD-2021-0381; OWASP WSTG-CONF-04",
-      "new_or_repeat": "Repeat", "previous_finding_id": "WASA-2025-07",
+      "reference": "CERT-In vulnerability note CIVN-2021-0000; OWASP WSTG-ATHZ-01",
+      "new_or_repeat": "Repeat",
+      "previous_finding_id": "WASA-2025-07",
       "cve_details": [
-        {"cve_id": "CVE-2021-41773", "cvss_version": "3.1", "cvss_score": 7.5, "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
-         "epss_score": 0.944, "epss_date": "2026-07-09", "kev_listed": true, "certin_advisory_ref": "CIAD-2021-0381"}
+        {
+          "cve_id": "CVE-2021-41773",
+          "cvss_version": "3.1",
+          "cvss_score": 9.8,
+          "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+          "epss_score": 0.944,
+          "epss_date": "2026-07-09",
+          "kev_listed": true,
+          "certin_advisory_ref": "CIVN-2021-0000"
+        }
       ],
-      "test_environment": "Production", "closure_timeline": "Immediate", "notified_on": "2026-07-09", "notification_ref": "EAPL/DES/NOTIF/02", "immediate_risk": true,
-      "risk_treatment": {"decision": "Remediate"}
+      "test_environment": "Production",
+      "closure_timeline": "Immediate",
+      "notified_on": "2026-07-09",
+      "notification_ref": "EAPL/DES/NOTIF/02",
+      "immediate_risk": true,
+      "risk_treatment": {
+        "decision": "Remediate"
+      }
     },
     {
-      "finding_id": "WASA-03", "title": "Missing Content-Security-Policy header", "status": "Open", "severity": "Low",
-      "impact_level": "Minor", "likelihood_level": "Hard", "cve_id": [], "cve_not_applicable": true,
-      "cvss_score": 3.1, "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N", "cvss_version": "3.1",
+      "finding_id": "WASA-03",
+      "title": "Missing Content-Security-Policy header",
+      "status": "Open",
+      "severity": "Low",
+      "impact_level": "Minor",
+      "likelihood_level": "Hard",
+      "cve_id": [],
+      "cve_not_applicable": true,
+      "cvss_score": 3.1,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N",
+      "cvss_version": "3.1",
       "severity_rationale": "Exploitation requires a separate injection flaw and user interaction; impact is limited to partial disclosure.",
-      "observation_date": "2026-07-10", "cwe": ["CWE-1021"], "affected_asset": ["https://services.example.gov.in"], "affected_asset_sr_nos": [1],
+      "observation_date": "2026-07-10",
+      "cwe": [
+        "CWE-1021"
+      ],
+      "affected_asset": [
+        "https://services.example.gov.in"
+      ],
+      "affected_asset_sr_nos": [
+        1
+      ],
       "observation_description": "Responses from the portal do not include a Content-Security-Policy header, so the browser applies no restriction on script sources.",
       "preconditions": "A separate script injection flaw and a victim who opens a crafted page.",
       "proof_of_concept": [
-        {"sr_no": 1, "type": "text", "reference": "HTTP/1.1 200 OK ... (no Content-Security-Policy header)", "capture_date": "2026-07-10", "is_retest": false, "redacted": "NA", "description": "Response headers of the home page captured with Burp Suite."}
+        {
+          "sr_no": 1,
+          "type": "text",
+          "reference": "HTTP/1.1 200 OK ... (no Content-Security-Policy header)",
+          "capture_date": "2026-07-10",
+          "is_retest": false,
+          "redacted": "NA",
+          "description": "Response headers of the home page captured with Burp Suite."
+        }
       ],
       "impact": "Increases the impact of any script injection.",
       "likely_root_cause": "Security headers not configured in the reverse proxy.",
@@ -191,41 +557,126 @@
       "reference": "OWASP ASVS V14.4.3",
       "new_or_repeat": "New",
       "cve_details": [],
-      "test_environment": "Production", "closure_timeline": "90 days", "immediate_risk": false,
-      "risk_treatment": {"decision": "Remediate"}
+      "test_environment": "Production",
+      "closure_timeline": "90 days",
+      "immediate_risk": false,
+      "risk_treatment": {
+        "decision": "Remediate"
+      }
     }
   ],
   "compliance_assessments": [
-    {"sr_no": 1, "framework": "CERT-In Directions 28.04.2022", "requirement_id": "DIR-i", "requirement_text": "Clock synchronisation with NTP of NIC or NPL", "status": "Compliant",
-     "evidence_refs": [{"description": "chrony configuration on web01 points to samay1.nic.in"}]},
-    {"sr_no": 2, "framework": "CERT-In Directions 28.04.2022", "requirement_id": "DIR-v", "requirement_text": "Logs of all ICT systems maintained for 180 days within India", "status": "Partially compliant",
-     "evidence_refs": [{"description": "Log retention set to 90 days on the API gateway"}], "related_finding_ids": []},
-    {"sr_no": 3, "framework": "CERT-In Directions 28.04.2022", "requirement_id": "DIR-iii", "requirement_text": "Point of Contact designated", "status": "Compliant", "evidence_refs": []}
+    {
+      "sr_no": 1,
+      "framework": "CERT-In Directions 28.04.2022",
+      "requirement_id": "DIR-i",
+      "requirement_text": "Clock synchronisation with NTP of NIC or NPL",
+      "status": "Compliant",
+      "evidence_refs": [
+        {
+          "description": "chrony configuration on web01 points to samay1.nic.in"
+        }
+      ]
+    },
+    {
+      "sr_no": 2,
+      "framework": "CERT-In Directions 28.04.2022",
+      "requirement_id": "DIR-iv",
+      "requirement_text": "Logs of all ICT systems maintained for 180 days within India",
+      "status": "Partially compliant",
+      "evidence_refs": [
+        {
+          "description": "Log retention set to 90 days on the API gateway"
+        }
+      ],
+      "related_finding_ids": []
+    },
+    {
+      "sr_no": 3,
+      "framework": "CERT-In Directions 28.04.2022",
+      "requirement_id": "DIR-iii",
+      "requirement_text": "Point of Contact designated",
+      "status": "Compliant",
+      "evidence_refs": []
+    }
   ],
   "appendices": {
     "risk_rating_criteria": [
-      {"rating": "High", "description": "", "impact_level": "Major", "likelihood_level": "Easy"},
-      {"rating": "Low", "description": "", "impact_level": "Minor", "likelihood_level": "Hard"}
+      {
+        "rating": "High",
+        "description": "",
+        "impact_level": "Major",
+        "likelihood_level": "Easy"
+      },
+      {
+        "rating": "Low",
+        "description": "",
+        "impact_level": "Minor",
+        "likelihood_level": "Hard"
+      }
     ],
     "retest_closure": [
-      {"finding_id": "WASA-01", "retest_date": "2026-08-11", "closure_evidence_ref": 2, "status": "Closed"},
-      {"finding_id": "WASA-02", "retest_date": "2026-08-12", "closure_evidence_ref": 2, "status": "Closed"}
+      {
+        "finding_id": "WASA-01",
+        "retest_date": "2026-08-11",
+        "closure_evidence_ref": 2,
+        "status": "Closed"
+      },
+      {
+        "finding_id": "WASA-02",
+        "retest_date": "2026-08-12",
+        "closure_evidence_ref": 2,
+        "status": "Closed"
+      }
     ],
     "engagement_record": {
       "nda_signed": true,
-      "approvals": [{"type": "Penetration Testing", "granted_by": "CISO", "date": "2026-06-28", "reference": "DES/CISO/2026/112"}],
+      "approvals": [
+        {
+          "type": "Penetration Testing",
+          "granted_by": "CISO",
+          "date": "2026-06-28",
+          "reference": "DES/CISO/2026/112"
+        }
+      ],
       "working_notes_provided": true,
       "metadata_shared_with_certin_on": "2026-07-24"
     },
     "policy_review": []
   },
   "meta": {
-    "source": {"file_name": "sample_wasa_report.pdf", "file_hash": "sha256:0000", "page_count": 41, "extraction_date": "2026-08-25", "extractor_version": "report-to-json 0.9", "schema_version": "2.0"},
-    "report_structure": [{"sr_no": 1, "heading": "Executive Summary", "level": 1, "page_from": 3, "page_to": 4, "mapped_to": "executive_summary"}],
+    "source": {
+      "file_name": "sample_wasa_report.pdf",
+      "file_hash": "sha256:0000",
+      "page_count": 41,
+      "extraction_date": "2026-08-25",
+      "extractor_version": "report-to-json 0.9",
+      "schema_version": "2.0"
+    },
+    "report_structure": [
+      {
+        "sr_no": 1,
+        "heading": "Executive Summary",
+        "level": 1,
+        "page_from": 3,
+        "page_to": 4,
+        "mapped_to": "executive_summary"
+      }
+    ],
     "unmapped_sections": [],
     "field_confidence": [
-      {"json_path": "$.detailed_observations[2].cvss_score", "confidence": 0.98, "source_page": 30, "method": "direct"},
-      {"json_path": "$.auditing_team[2].designation", "confidence": 0.95, "source_page": 2, "method": "direct"}
+      {
+        "json_path": "$.detailed_observations[2].cvss_score",
+        "confidence": 0.98,
+        "source_page": 30,
+        "method": "direct"
+      },
+      {
+        "json_path": "$.auditing_team[2].designation",
+        "confidence": 0.95,
+        "source_page": 2,
+        "method": "direct"
+      }
     ],
     "extraction_notes": []
   }

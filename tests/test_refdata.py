@@ -18,9 +18,10 @@ class Package(unittest.TestCase):
         m = json.loads((package() / "manifest.json").read_text())
         for s in ("nvd", "nvd_history", "cve_list", "epss", "kev", "cwe", "certin_advisories", "empanelment"):
             self.assertEqual(m["sources"][s]["status"], "included", s)
-        self.assertEqual(m["sources"]["epss"]["model_versions"], ["#model_version:v2025.03.14,score_date:2026-07-08T00:00:00+0000",
-                                                                   "#model_version:v2025.03.14,score_date:2026-07-09T00:00:00+0000",
-                                                                   "#model_version:v2025.03.14,score_date:2026-07-10T00:00:00+0000"])
+        self.assertEqual(m["sources"]["epss"]["model_versions"], ["#model_version:unrecorded (file predates 2022-02-04)",
+                                                                   "#model_version:v2026.06.15,score_date:2026-07-08T12:55:00Z",
+                                                                   "#model_version:v2026.06.15,score_date:2026-07-09T12:55:00Z",
+                                                                   "#model_version:v2026.06.15,score_date:2026-07-10T12:55:00Z"])
 
     def test_tampering_is_detected(self):
         tmp = Path(tempfile.mkdtemp())
@@ -62,7 +63,7 @@ class Package(unittest.TestCase):
         self.assertEqual(m["sources"]["nvd"]["status"], "carried_forward")
         self.assertIn("SHA-256", m["sources"]["nvd"]["error"])
         with ReferenceData(built) as rd:
-            self.assertEqual(rd.nvd_cvss("CVE-2021-41773", "3.1", dt.date(2026, 8, 27)).score, 7.5)
+            self.assertEqual(rd.nvd_cvss("CVE-2021-41773", "3.1", dt.date(2026, 8, 27)).score, 9.8)
             self.assertIsNotNone(rd.epss("CVE-2021-41773", dt.date(2026, 7, 9)))     # archive kept
             self.assertIsNotNone(rd.epss("CVE-2021-41773", dt.date(2026, 8, 26)))    # new day added
         sign_package(built, workspace() / "key.pem")
@@ -86,7 +87,7 @@ class AsAtDate(unittest.TestCase):
         rd = refdata()
         p, pct, model = rd.epss("CVE-2021-41773", dt.date(2026, 7, 9))
         self.assertAlmostEqual(rd.epss_percentile_rank(p, dt.date(2026, 7, 9)), pct, places=2)
-        self.assertEqual(model, "v2025.03.14")
+        self.assertEqual(model, "v2026.06.15")
 
     def test_empanelment_set_in_force(self):
         emp = refdata().empanelment("CERTIN-EMP-0999", dt.date(2025, 6, 1))

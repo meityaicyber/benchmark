@@ -95,7 +95,10 @@ def sector_depth(ctx: Context, cr) -> float | None:
             cr.notes.append("sector of the auditee not stated; sector regulations not evaluable")
             cr.referrals.append("Q2: sector of the auditee not stated; mandatory sector regulations not determined")
         return None
-    regs = sectors[key] or []
+    when = ctx.report.reference_date()
+    regs = [r for r in (sectors[key] or []) if _in_force(r, when)]
+    if (sectors[key] or []) and not regs:
+        cr.notes.append(f"no mandatory regulation for sector '{key}' in force on {when}")
     if not regs:
         return None  # no regulation mandatory for the sector: R excluded and weights renormalised
     entries = [e for e in _usable(ctx, [e for e in ctx.report.compliance
@@ -125,6 +128,14 @@ def sector_depth(ctx: Context, cr) -> float | None:
     return r
 
 
+def _in_force(reg: dict, when) -> bool:
+    """A regulation applies where the report's reference date lies within its period in force."""
+    if when is None:
+        return "in_force_until" not in reg
+    d = when.isoformat()
+    return str(reg.get("in_force_from") or "0000") <= d < str(reg.get("in_force_until") or "9999")
+
+
 def advisory_coverage(ctx: Context, cr) -> float | None:
     rd = ctx.refdata
     if rd is None or not rd.available("certin_advisories"):
@@ -150,7 +161,7 @@ def advisory_coverage(ctx: Context, cr) -> float | None:
     for o in ctx.report.observations:
         for e in o.get("cve_details") or []:
             if e.get("certin_advisory_ref"):
-                cited |= {s.upper() for s in re.findall(r"CI[A-Z]{2}-\d{4}-\d{3,5}", str(e["certin_advisory_ref"]), re.I)}
+                cited |= {s.upper() for s in re.findall(r"CI(?:AD|VN)-\d{4}-\d{4}", str(e["certin_advisory_ref"]), re.I)}
                 cited.add(str(e["certin_advisory_ref"]).strip().upper())
     reflected = [a for a in relevant if a in cited]
     for a in sorted(set(relevant) - set(reflected)):

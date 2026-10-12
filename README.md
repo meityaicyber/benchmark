@@ -18,7 +18,9 @@ For each report the Suite returns a compliance status (Compliant, Non-compliant 
 | `src/certin_benchmark/calibration/` | Agreement measures, reference set split, weight and threshold fitting (Section 8) |
 | `config/suite.yaml` | Weights, cap, thresholds, tolerances, sampling and model settings |
 | `curated/` | Curated reference lists transferred inside each Reference Data Package (Section 11.1) |
-| `tests/` | 90 tests, including an end-to-end run on a sample report and a synthetic signed package |
+| `tests/` | 91 tests, including an end-to-end run on a sample report and a synthetic signed package |
+| `docs/VALIDATION.md` | Check of every external fact against the publishers' sites, 12 October 2026 |
+| `tools/` | Scripts that re-validate the CVSS reference vectors against the specification and FIRST's calculator |
 
 ## Installation
 
@@ -76,7 +78,7 @@ The Suite reads every external source from a dated, signed package (Section 11).
    certin-benchmark rdp build --staging staging/ --out-root packages/ --previous packages/RDP-<previous>
    certin-benchmark rdp sign packages/RDP-<date> --key private.pem
    ```
-   The build validates the CVSS library against 306 reference vectors, verifies each source (NVD SHA-256 metadata, KEV structure, full parse, record counts against the previous package), carries forward any source that fails verification, and writes a manifest with retrieval times, publisher versions, file hashes, record counts and EPSS model versions. Each preparation is appended to `preparation_log.jsonl`.
+   The build validates the CVSS library against 3,264 reference vectors (the whole v3.1 base space and 672 v4.0 vectors; see `docs/VALIDATION.md`), verifies each source (NVD SHA-256 metadata, KEV structure, full parse, record counts against the previous package), carries forward any source that fails verification, and writes a manifest with retrieval times, publisher versions, file hashes, record counts and EPSS model versions. Each preparation is appended to `preparation_log.jsonl`.
 2. Transfer on write-once media or through the approved unidirectional mechanism.
 3. Inside the environment:
    ```
@@ -100,11 +102,11 @@ The agreement report gives Cohen's kappa and precision of Fail per mandatory che
 
 ## Status of the curated lists
 
-The following lists are provisional and are to be replaced with the authoritative versions from CERT-In before operational use:
+Every name, date and identifier format in `curated/` was checked against the issuers on 12 October 2026 (`docs/VALIDATION.md`). The following remain provisional until CERT-In supplies or confirms them:
 
-* the requirements of the CERT-In Directions dated 28 April 2022 (`curated/regulatory.yaml`), pending the CERT-In document on methods of verification;
-* the 282 control points of the MeitY Comprehensive Audit Program Checklist (empty; MC-07 counts distinct assessed identifiers until the list is supplied);
-* the controlled list of sectors and the mandatory regulations for each;
+* the requirements of the CERT-In Directions dated 28 April 2022: the six published directions are listed, pending the CERT-In document on methods of verification, whose published URL returns "not found";
+* the 282 control points of the MeitY Comprehensive Audit Program Checklist, which is not published (empty; MC-07 counts distinct assessed identifiers until the list is supplied);
+* the controlled list of sectors and the mandatory regulations for each, which now carry the dates they are in force (the RBI Directions of 31 July 2026 and the CEA Regulations, 2026 change the banking, NBFC and power entries);
 * the designation lists for mid-management, the head of an organisation and prohibited categories, and the mapping of qualifications to engagement modules.
 
 ## Interpretations for confirmation with CERT-In
@@ -126,12 +128,14 @@ The specification leaves the following points open. The code takes the reading s
 13. **Q8.** A category excluded with a reason is not penalised under CA (Section 6.8, final paragraph), since the schema does not record who made the exclusion.
 14. **Section 10.1.** An obligation is reported Pass, Fail or Not recorded. A missing conference or Board presentation date is Not recorded.
 15. **Sampling.** v_max = 0.8 and a minimum of three valid ratings are initial values for calibration.
+16. **CVSS v4.0 rounding.** Scores that are exact halves (522 of 104,976 base vectors) are rounded half up, as the `cvss` library and Red Hat's corrected reference calculator do. The August 2024 calculator snapshot in FIRST's GitHub organisation gives 0.1 less for these vectors.
 
 ## Known limitations
 
 * Image proof-of-concept entries need the image files beside the JSON (`--assets-dir`) and a vision model. Without them those entries are not evaluated and the composite score is provisional.
 * CWE validity as at a past date depends on every CWE release since that date being staged; `rdp fetch --cwe-releases` takes the list.
-* The KEV catalogue is checked against the structure of CISA's published schema in code rather than with a JSON Schema validator, to avoid a further dependency.
+* The KEV catalogue is checked against the required fields and patterns of CISA's published schema in code rather than with a JSON Schema validator, to avoid a further dependency.
+* The NVD Change History API limits used by `rdp fetch` (120-day window, 5,000 results a page, request pacing) could not be re-read from NVD's documentation on 12 October 2026 and should be confirmed before the first package is prepared.
 * Engagement module checks for third-party certificates, network devices, pipelines and forensics use curated keyword lists in `curated/modules.yaml`.
 
 ## Tests

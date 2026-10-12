@@ -1,57 +1,109 @@
 # Regulatory reference lists (Suite MC-06, MC-07, Q2).
-# STATUS: initial project lists. The definitive enumeration of the Directions requirements is the
-# CERT-In document on methods of verification, and the 282 control points are those of the MeitY
-# Comprehensive Audit Program Checklist; both are to be supplied by CERT-In and substituted here.
+# Checked against the issuers' sites on 12 October 2026; each entry names its source.
+# STATUS: project lists pending CERT-In confirmation. The 282 control points of the MeitY checklist
+# are not published and are to be supplied by CERT-In or MeitY.
 
 directions_2022:
   framework: "CERT-In Directions 28.04.2022"
-  source_status: "provisional: derived from the Directions under Section 70B(6), pending the CERT-In methods of verification document"
+  source: "https://www.cert-in.org.in/PDF/CERT-In_Directions_70B_28.04.2022.pdf (No. 20(3)/2022-CERT-In)"
+  explanatory: "https://www.cert-in.org.in/PDF/FAQs_on_CyberSecurityDirections_May2022.pdf (FAQs, May 2022)"
+  source_status: >-
+    The six directions below follow the published Directions. The CERT-In document on methods of
+    verification cited by the Suite could not be retrieved (its URL returns not found on 12 October 2026);
+    the list is to be replaced by that document's enumeration when CERT-In supplies it.
   requirements:
     - id: DIR-i
-      text: "Connect to the NTP server of NIC or NPL, or to servers traceable to them, for synchronisation of all ICT system clocks"
+      text: "Connect to the NTP server of NIC or NPL, or to NTP servers traceable to them, for synchronisation of all ICT system clocks"
     - id: DIR-ii
-      text: "Report cyber incidents of the types listed in Annexure I to CERT-In within 6 hours of noticing or being brought to notice"
+      text: "Report cyber incidents of the types in Annexure I to CERT-In within 6 hours of noticing them or being notified of them"
     - id: DIR-iii
-      text: "Designate a Point of Contact to interface with CERT-In and communicate the details in the prescribed format"
+      text: "Take action or furnish information when ordered by CERT-In, within the time specified, and designate a Point of Contact to interface with CERT-In (Annexure II format)"
     - id: DIR-iv
-      text: "Furnish information or assistance to CERT-In when ordered, within the time specified"
-    - id: DIR-v
       text: "Enable logs of all ICT systems and maintain them securely for a rolling period of 180 days within the Indian jurisdiction"
+    - id: DIR-v
+      text: "Data centres, virtual private server, cloud service and VPN service providers register and maintain subscriber information for 5 years or longer as mandated by law"
     - id: DIR-vi
-      text: "Data centres, virtual private server, cloud service and VPN service providers register and maintain subscriber information for 5 years"
-    - id: DIR-vii
-      text: "Virtual asset service, exchange and custodian wallet providers maintain KYC and financial transaction records for 5 years"
+      text: "Virtual asset service, exchange and custodian wallet providers maintain KYC and records of financial transactions for 5 years"
 
 meity_checklist:
   framework: "MeitY Comprehensive Audit Program Checklist"
-  control_points: []          # 282 identifiers, to be supplied; MC-07 counts distinct assessed identifiers meanwhile
+  source_status: "Not publicly available; the figure of 282 control points is from Guidelines §8(v). To be supplied by CERT-In or MeitY."
+  control_points: []          # MC-07 counts distinct assessed identifiers until the list is supplied
 
 # Controlled list of auditee sectors (report_meta.auditee_organization.sector) and the regulations
-# mandatory for each. A sector with an empty list has no mandatory sector regulation (Q2 R excluded).
+# mandatory for each. A regulation applies to a report when its reference date (Suite Section 11.3)
+# falls within [in_force_from, in_force_until). A sector with no regulation in force has R excluded.
 sectors:
   Banking:
+    - name: "Reserve Bank of India (Commercial Banks - Cybersecurity, Technology: Risk, Resilience and Assurance Framework) Directions, 2026"
+      reference: "RBI/DoS/2026-27/410, 31 July 2026"
+      in_force_from: "2026-07-31"
+      aliases: ["commercial banks - cybersecurity, technology", "cybersecurity, technology: risk, resilience and assurance framework", "rbi/dos/2026-27/410"]
+      source: "https://rbi.org.in/scripts/NotificationUser.aspx?Id=13643&Mode=0"
+      note: "Commercial banks; small finance, payments and local area banks are outside these Directions"
     - name: "RBI Master Direction on Information Technology Governance, Risk, Controls and Assurance Practices, 2023"
+      reference: "RBI/2023-24/107, 7 November 2023"
+      in_force_from: "2024-04-01"
+      in_force_until: "2026-07-31"
       aliases: ["rbi master direction on it governance", "rbi it governance", "master direction it governance", "rbi/2023-24/107"]
+      source: "https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=12562"
+      note: "Repealed for commercial banks by the 2026 Directions, para 230"
     - name: "RBI Cyber Security Framework in Banks, 2016"
-      aliases: ["rbi cyber security framework", "cyber security framework in banks", "rbi csf"]
+      reference: "RBI/2015-16/418, 2 June 2016"
+      in_force_from: "2016-06-02"
+      in_force_until: "2026-07-31"
+      aliases: ["rbi cyber security framework", "cyber security framework in banks", "rbi csf", "rbi/2015-16/418"]
+      source: "https://www.rbi.org.in/scripts/NotificationUser.aspx?Id=10435"
+      note: "Repealed for commercial banks by the 2026 Directions, para 230"
   Non-Banking Financial Company:
+    - name: "Reserve Bank of India (Non-Banking Financial Companies - Cybersecurity, Technology: Risk, Resilience and Assurance Framework) Directions, 2026"
+      reference: "RBI/DoS/2026-27/461, 31 July 2026"
+      in_force_from: "2026-07-31"
+      aliases: ["non-banking financial companies - cybersecurity, technology", "cybersecurity, technology: risk, resilience and assurance framework", "rbi/dos/2026-27/461"]
+      source: "https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=13592"
     - name: "RBI Master Direction on Information Technology Governance, Risk, Controls and Assurance Practices, 2023"
-      aliases: ["rbi master direction on it governance", "rbi it governance", "master direction it governance"]
+      reference: "RBI/2023-24/107, 7 November 2023"
+      in_force_from: "2024-04-01"
+      in_force_until: "2026-07-31"
+      aliases: ["rbi master direction on it governance", "rbi it governance", "master direction it governance", "rbi/2023-24/107"]
+      source: "https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=12562"
+      note: "Top, Upper and Middle Layer NBFCs only; repealed by the 2026 NBFC Directions, para 155"
   Payment Systems:
-    - name: "RBI Master Directions on Cyber Resilience and Digital Payment Security Controls for Payment System Operators, 2024"
-      aliases: ["cyber resilience and digital payment security controls", "rbi pso cyber resilience"]
+    - name: "Master Directions on Cyber Resilience and Digital Payment Security Controls for non-bank Payment System Operators, 2024"
+      reference: "RBI/DPSS/2024-25/123, 30 July 2024"
+      in_force_from: "2024-07-30"
+      aliases: ["cyber resilience and digital payment security controls", "rbi pso cyber resilience", "rbi/dpss/2024-25/123"]
+      source: "https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=12715"
   Capital Markets:
-    - name: "SEBI Cybersecurity and Cyber Resilience Framework (CSCRF), 2024"
+    - name: "SEBI Cybersecurity and Cyber Resilience Framework (CSCRF) for SEBI Regulated Entities, 2024"
+      reference: "SEBI/HO/ITD-1/ITD_CSC_EXT/P/CIR/2024/113, 20 August 2024"
+      in_force_from: "2024-08-20"
       aliases: ["sebi cscrf", "cscrf", "cybersecurity and cyber resilience framework"]
+      source: "https://www.sebi.gov.in (circular of 20 August 2024)"
   Insurance:
     - name: "IRDAI Information and Cyber Security Guidelines, 2023"
+      reference: "IRDAI/GA&HR/GDL/MISC/88/04/2023, 24 April 2023"
+      in_force_from: "2023-04-24"
       aliases: ["irdai information and cyber security guidelines", "irdai cyber security guidelines", "irdai iscg"]
+      source: "Secondary source only (irdai.gov.in not reachable on 12 October 2026); confirm on irdai.gov.in"
   Telecom:
     - name: "Telecommunications (Telecom Cyber Security) Rules, 2024"
+      reference: "G.S.R. 720(E), 21 November 2024; amended by G.S.R. 771(E), 22 October 2025"
+      in_force_from: "2024-11-21"
       aliases: ["telecom cyber security rules", "telecommunications (telecom cyber security) rules"]
+      source: "https://www.thc.nic.in/Central%20Governmental%20Rules/Telecommunications%20(Telecom%20Cyber%20Security)%20Rules,%202024.pdf"
   Power:
+    - name: "Central Electricity Authority (Cyber Security in Power Sector) Regulations, 2026"
+      reference: "Notified 31 July 2026"
+      in_force_from: "2027-04-01"
+      aliases: ["cea cyber security regulations", "cyber security in power sector) regulations"]
+      source: "News reports only; not confirmed on cea.nic.in on 12 October 2026"
     - name: "CEA (Cyber Security in Power Sector) Guidelines, 2021"
+      reference: "October 2021"
+      in_force_from: "2021-10-01"
+      in_force_until: "2027-04-01"
       aliases: ["cea cyber security guidelines", "cyber security in power sector", "cea guidelines"]
+      source: "CEA Guidelines 2021 (copy at https://tgtransco.com/it_uploads/CEAGuidelines2021.pdf)"
   Government: []
   Health: []
   Transport: []

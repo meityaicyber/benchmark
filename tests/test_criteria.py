@@ -28,7 +28,7 @@ class Q1(unittest.TestCase):
         r["detailed_observations"][2]["proof_of_concept"][0]["description"] = "Captured with OWASP ZAP and Burp Suite."
         c = criterion(evaluate(r), "Q1")
         self.assertLess(c.components["T_comp"].score, 100)
-        self.assertTrue(any("OWASP ZAP" in d for d in c.deficiencies))
+        self.assertTrue(any("ZAP" in d for d in c.deficiencies))
 
     def test_missing_manual_testing_caps_specificity(self):
         r = compliant_sample()
@@ -41,10 +41,10 @@ class Q1(unittest.TestCase):
 class Q2(unittest.TestCase):
     def test_depth_scores_0_50_100(self):
         c = criterion(evaluate(compliant_sample()), "Q2")
-        # DIR-i 100, DIR-iii 100, DIR-v 100, four others not assessed
-        self.assertAlmostEqual(c.components["D"].score, 300 / 7, places=3)
+        # Six directions: DIR-i, DIR-iii and DIR-iv assessed with evidence (100 each), three not assessed
+        self.assertAlmostEqual(c.components["D"].score, 300 / 6, places=3)
         self.assertIsNone(c.components["R"].score)        # Government: no mandatory sector regulation
-        self.assertEqual(c.components["A"].score, 100.0)  # CIAD-2021-0381 cited
+        self.assertEqual(c.components["A"].score, 100.0)  # CIVN-2021-0000 (synthetic note) cited
 
     def test_unassessed_sector_regulation_caps_R(self):
         r = compliant_sample()
@@ -184,19 +184,29 @@ class Q7(unittest.TestCase):
     def test_cwe_not_yet_published_on_reference_date(self):
         r = compliant_sample()
         o = r["detailed_observations"][2]
-        o["cwe"] = ["CWE-1395"]
-        o["observation_date"] = "2024-01-10"        # before release 4.15 in which CWE-1395 first appears
+        o["cwe"] = ["CWE-1426"]
+        o["observation_date"] = "2024-01-10"        # before release 4.15 (2024-07-16), in which CWE-1426 first appears
         c = criterion(evaluate(r), "Q7")
         self.assertFalse(c.per_finding["WASA-03"]["checks"][0]["met"])
 
     def test_nvd_score_reconstructed_before_earliest_package(self):
         from certin_benchmark.util import parse_date
+        # NVD history: 7.5 from 2021-10-12, 9.8 from 2026-02-17; the CISA-ADP entry is not NVD's and is ignored
         s = refdata().nvd_cvss("CVE-2021-41773", "3.1", parse_date("2026-07-09"))
         self.assertTrue(s.reconstructed)
-        self.assertEqual(s.score, 7.5)
+        self.assertEqual(s.score, 9.8)
+        old = refdata().nvd_cvss("CVE-2021-41773", "3.1", parse_date("2025-06-01"))
+        self.assertEqual(old.score, 7.5)
         s2 = refdata().nvd_cvss("CVE-2021-41773", "3.1", EVAL_DATE)
         self.assertFalse(s2.reconstructed)
-        self.assertIsNone(refdata().nvd_cvss("CVE-2021-41773", "3.1", parse_date("2021-01-01")))
+        self.assertEqual(s2.score, 9.8)
+        self.assertIsNone(refdata().nvd_cvss("CVE-2021-41773", "3.1", parse_date("2021-10-11")))
+
+    def test_epss_file_without_percentile_column(self):
+        from certin_benchmark.util import parse_date
+        p, pct, model = refdata().epss("CVE-2021-41773", parse_date("2021-05-01"))
+        self.assertIsNone(model)
+        self.assertAlmostEqual(pct, refdata().epss_percentile_rank(p, parse_date("2021-05-01")), places=6)
 
 
 class Q8(unittest.TestCase):
