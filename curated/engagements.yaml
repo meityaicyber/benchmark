@@ -1,0 +1,92 @@
+# Engagement types, scope categories and module selection (Guidelines §6, §13.1.1; Suite MC-16, MC-21, Q8, Section 9).
+
+# MC-16: values of report_meta.audit_types[] that correspond to engagement types enumerated in §6.
+# "Other" is not an enumerated type.
+enumerated_audit_types:
+  - VAPT
+  - EAPT
+  - Device Level Audit
+  - Configuration Audit
+  - Process Audit
+  - Web Application Security Audit
+  - Mobile Application Security Audit
+  - API Security Audit
+  - Compliance Audit
+  - Network Infrastructure Audit
+  - Cloud Security Testing
+  - Source Code Review
+  - Red Team Assessment
+  - OT/ICS Security Testing
+  - IoT/IIoT Security Testing
+  - AI System Audit
+  - Blockchain Security Audit
+  - SBOM/QBOM/AIBOM Audit
+
+# MC-21: audit types that are application security audits (§8(vii), §8(viii))
+application_security_types:
+  - Web Application Security Audit
+  - Mobile Application Security Audit
+  - API Security Audit
+  - Source Code Review
+
+# Q8 documentation of scope: §13.1.1(a) categories relevant to each audit type
+relevant_scope_categories:
+  VAPT: [Systems, Web Application, Network Infrastructure, Application Security, Third-party and Supply Chain Risk]
+  EAPT: [Systems, Network Infrastructure, Cloud Architecture, Third-party and Supply Chain Risk]
+  Device Level Audit: [Systems, Network Infrastructure]
+  Configuration Audit: [Systems, Network Infrastructure, Database and Hosting]
+  Process Audit: [Data Security, Incident Response Capability, Third-party and Supply Chain Risk]
+  Web Application Security Audit: [Web Application, Application Security, Database and Hosting, Source Code, Third-party and Supply Chain Risk]
+  Mobile Application Security Audit: [Mobile Application, Application Security, API, Source Code, Third-party and Supply Chain Risk]
+  API Security Audit: [API, Application Security, Database and Hosting, Third-party and Supply Chain Risk]
+  Compliance Audit: [Data Security, Incident Response Capability, Third-party and Supply Chain Risk]
+  Network Infrastructure Audit: [Systems, Network Infrastructure, Third-party and Supply Chain Risk]
+  Cloud Security Testing: [Cloud Architecture, Systems, Data Security, Third-party and Supply Chain Risk]
+  Source Code Review: [Source Code, Application Security, Software]
+  Red Team Assessment: [Systems, Network Infrastructure, Incident Response Capability]
+  OT/ICS Security Testing: [OT/ICS, Network Infrastructure, Systems]
+  IoT/IIoT Security Testing: [Systems, Network Infrastructure, Software]
+  AI System Audit: [Software, Data Security, Application Security]
+  Blockchain Security Audit: [Software, Source Code, Application Security]
+  SBOM/QBOM/AIBOM Audit: [Software, Third-party and Supply Chain Risk]
+
+# Section 9: audit types that select each engagement module
+module_selection:
+  web: [Web Application Security Audit, VAPT]
+  mobile: [Mobile Application Security Audit]
+  api: [API Security Audit]
+  network: [Network Infrastructure Audit, Device Level Audit, Configuration Audit, EAPT]
+  cloud: [Cloud Security Testing]
+  cicd: []                         # selected for Process Audit with pipeline scope (see cicd_scope_keywords)
+  source_code: [Source Code Review]
+  compliance: [Compliance Audit, Process Audit]
+  critical_database: []            # selected by a critical database asset
+  forensics: []                    # selected by forensic scope (see forensic_scope_keywords)
+
+cicd_scope_keywords: ["ci/cd", "cicd", "pipeline", "devsecops", "continuous integration", "continuous deployment", "continuous delivery"]
+forensic_scope_keywords: ["forensic", "forensics", "incident investigation", "compromise assessment"]
+
+# Values of engagement_scope.assets[].criticality that denote a critical asset
+critical_asset_values: ["critical", "very high", "mission critical", "tier 1", "tier-1"]
+
+# MC-07 applicability (§8(v))
+meity_checklist_entity_types: ["Central Ministry/Department", "Secretariat", "Attached or Subordinate Office"]
+meity_checklist_control_points: 282
+
+# Asset types (MC-13 and modules)
+in_scope_application_asset_types: [Web Application, Mobile Application, API]
+critical_application_asset_types: [Web Application, Mobile Application, API, Source Code]
+critical_database_asset_types: [Database]
+
+# Record checks (Section 10.1): approval types required for tests performed, by audit type
+required_approvals_by_audit_type:
+  VAPT: [Penetration Testing]
+  EAPT: [Penetration Testing, Remote Testing]
+  Red Team Assessment: [Penetration Testing, Social Engineering]
+  Process Audit: [Process Testing]
+# Approval types required where methodology text indicates the test was performed
+required_approvals_by_keyword:
+  DoS/DDoS Testing: ["denial of service", "denial-of-service", "dos test", "ddos", "stress test", "load test"]
+  Social Engineering: ["social engineering", "phishing simulation", "vishing", "pretext"]
+  Remote Testing: ["remote testing", "remotely", "over vpn", "remote access was provided"]
+  Tool Installation: ["agent installed", "installed on the auditee", "tool installation"]
