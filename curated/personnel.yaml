@@ -1,0 +1,121 @@
+# Designation lists (Suite MC-08, MC-09, Q3) and qualification mapping (Q3 domain expertise).
+# Matching is case-insensitive on whole words. A designation not matching a list is never
+# treated as a failure; MC-08 returns Indeterminate and refers it for human review.
+
+mid_management:
+  - manager
+  - senior manager
+  - assistant manager
+  - deputy manager
+  - project manager
+  - delivery manager
+  - team lead
+  - team leader
+  - technical lead
+  - lead consultant
+  - principal consultant
+  - senior consultant
+  - associate director
+  - deputy general manager
+  - assistant general manager
+  - quality assurance manager
+  - qa manager
+  - practice head
+  - head of delivery
+
+head_of_organisation:
+  - chief executive officer
+  - ceo
+  - managing director
+  - director
+  - executive director
+  - chairman
+  - chairperson
+  - president
+  - proprietor
+  - partner
+  - managing partner
+  - founder
+  - head of organisation
+  - head of organization
+  - authorised signatory
+  - authorized signatory
+  - chief information security officer
+  - ciso
+
+# Head of the auditee organisation (MC-20 authorisation; recorded as a note only)
+auditee_head:
+  - secretary
+  - additional secretary
+  - joint secretary
+  - director general
+  - director
+  - chief executive officer
+  - ceo
+  - managing director
+  - chairman
+  - chairperson
+  - head of department
+  - head of office
+  - chief information security officer
+  - ciso
+  - chief information officer
+  - cio
+
+# §12.2(iii): prohibited categories, matched as regular expressions on the designation
+prohibited_categories:
+  freelancer: '\bfree[\s-]?lanc(er|ing)\b'
+  intern: '\binterns?\b|\binternship\b'
+  fresher: '\bfreshers?\b|\btrainee\b'
+  moonlighter: '\bmoonlight(er|ing)\b'
+  third_party_consultant: '\bthird[\s-]?party\b.*\bconsultant\b|\bexternal consultant\b|\bcontract(ual)? consultant\b'
+  notice_period: '\bnotice period\b'
+
+# Q3 domain expertise: certification or qualification keyword -> engagement modules it supports.
+# "all" means relevant to every module.
+qualification_modules:
+  cissp: [all]
+  cism: [compliance]
+  cisa: [compliance, network]
+  ceh: [web, mobile, api, network]
+  "ec-council certified ethical hacker": [web, mobile, api, network]
+  oscp: [web, api, network]
+  osce: [web, api, network]
+  oswe: [web, api, source_code]
+  osep: [network]
+  gpen: [web, network]
+  gwapt: [web, api]
+  gxpn: [network]
+  gcih: [forensics]
+  gcfa: [forensics]
+  gcfe: [forensics]
+  chfi: [forensics]
+  encase: [forensics]
+  emapt: [mobile]
+  gmob: [mobile]
+  ewpt: [web]
+  ewptx: [web, api]
+  ecppt: [network, web]
+  crest: [web, network, api]
+  "crest registered penetration tester": [web, network, api]
+  ccsp: [cloud]
+  ccsk: [cloud]
+  "aws certified security": [cloud]
+  "azure security engineer": [cloud]
+  "google professional cloud security": [cloud]
+  csslp: [source_code, web, cicd]
+  gssp: [source_code]
+  "iso 27001 lead auditor": [compliance, critical_database]
+  "iso/iec 27001 lead auditor": [compliance, critical_database]
+  "iso 27001 la": [compliance]
+  ccna: [network]
+  ccnp: [network]
+  "ccna security": [network]
+  oracle certified: [critical_database]
+  ocp: [critical_database]
+  "kubernetes security specialist": [cloud, cicd]
+  cks: [cloud, cicd]
+  "certified devsecops professional": [cicd]
+  cdp: [cicd]
+  gicsp: [network]
+  grid: [network]

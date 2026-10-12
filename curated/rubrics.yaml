@@ -1,0 +1,133 @@
+# Rubric anchors for sampled distribution scoring (Suite Section 4).
+# Each sub-dimension has its own definition of every level. Anchors are revised only through the
+# Section 8.4 calibration procedure; record the revision in `revision` below.
+
+revision: "initial (6 October 2026 specification)"
+
+rubrics:
+  q1_methodology_specificity:
+    question: "How specific to this engagement is the methodology narrative?"
+    basis: "§8(ix), §16.1(ii)"
+    levels:
+      1: "Boilerplate text that would read the same for any audit; names no asset, test case or decision."
+      2: "Generic methodology with one or two references to the engagement, such as the auditee name or a single asset."
+      3: "Identifies the assets in scope and the general testing approach for them, but not the specific test cases or the decisions taken."
+      4: "Identifies the assets, the test cases or control areas applied to them, and most decisions taken, such as sampling or exclusions."
+      5: "Fully engagement-specific: every asset is tied to the test cases applied, and decisions, constraints and their reasons are stated."
+
+  q4c_legibility:
+    question: "Is this proof-of-concept entry legible and complete?"
+    basis: "§18(iii)"
+    levels:
+      1: "Unreadable or empty: the content cannot be made out, or the text is truncated to the point of meaninglessness."
+      2: "Mostly unreadable; only fragments such as a heading or a status code can be read."
+      3: "Readable with effort; key parts such as the request or the response are partly obscured, cropped or incomplete."
+      4: "Readable throughout, with minor issues such as small font or unnecessary surrounding content."
+      5: "Fully legible and complete; every element needed to follow the evidence is clear."
+
+  q4c_relevance:
+    question: "Does this entry demonstrate the specific claim made in the observation description?"
+    basis: "§5(iii), §18(iii)"
+    levels:
+      1: "Unrelated to the observation, or shows nothing that bears on the claim."
+      2: "Related to the affected asset but does not show the weakness claimed, for example a login page for an injection finding."
+      3: "Shows part of the claim, such as a request without the response that proves the effect, or a scanner alert without confirmation."
+      4: "Shows the request and response, or equivalent evidence, demonstrating the claim, with a minor gap in context."
+      5: "Conclusively demonstrates the specific claim: the triggering input and the resulting effect are both shown for the stated asset."
+
+  q4c_redaction:
+    question: "Is sensitive data absent from this entry, as §18(iv) requires?"
+    basis: "§18(iv)"
+    levels:
+      1: "Exposes live credentials, session tokens, keys or substantial personal data in clear."
+      2: "Exposes one item of sensitive data such as a single valid token or password."
+      3: "Exposes partial or low-sensitivity data such as internal hostnames with partial identifiers."
+      4: "Sensitive data is masked, with only non-sensitive internal details visible."
+      5: "No sensitive data is present or every sensitive value is fully masked."
+
+  q4c_retest_distinctness:
+    question: "Does this retest entry show an outcome distinct from the original evidence?"
+    basis: "§9.3(iv), §16.3(iv)"
+    levels:
+      1: "Identical to or a copy of the original evidence."
+      2: "Different capture, but shows the same outcome as the original without any indication of remediation."
+      3: "Suggests a changed outcome, but the effect of remediation is ambiguous."
+      4: "Shows a different outcome consistent with remediation, with minor gaps such as an unclear test input."
+      5: "Clearly repeats the original test and shows the remediated outcome."
+
+  q4d_specificity:
+    question: "Is the recommendation specific to the mechanism described rather than generic?"
+    basis: "§16.3(i)"
+    levels:
+      1: "Entirely generic advice such as 'follow best practices' or 'apply patches'."
+      2: "Generic advice containing one detail specific to the finding."
+      3: "Addresses the class of weakness for the affected component, without reference to the specific mechanism described."
+      4: "Addresses the specific mechanism described, with one aspect left general."
+      5: "Fully specific: names the component, parameter or configuration and the exact change required."
+
+  q4d_technical_correctness:
+    question: "Does the recommendation correctly address the likely root cause rather than a symptom?"
+    basis: "§16.3(i)"
+    levels:
+      1: "Technically wrong or would not remediate the weakness."
+      2: "Treats only a symptom and leaves the root cause in place, for example input length limits for an injection."
+      3: "Partly addresses the root cause, or correct but incomplete."
+      4: "Addresses the root cause correctly with a minor omission, such as a missing related control."
+      5: "Correctly and completely addresses the root cause, consistent with the stated likely root cause."
+
+  q4d_actionability:
+    question: "Can the recommendation be implemented without further clarification?"
+    basis: "§16.3(i)"
+    levels:
+      1: "Cannot be acted upon; states an objective without any means."
+      2: "States what to achieve but not how; would require substantial further clarification."
+      3: "Indicates the approach, but the implementer would need to resolve significant details."
+      4: "Implementable with minor clarification."
+      5: "Directly implementable: steps, configuration or code-level guidance are sufficient on their own."
+
+  q5_clarity:
+    question: "Is the executive summary intelligible to a non-technical decision-maker?"
+    basis: "§8(ix), §16.2(i)"
+    levels:
+      1: "Empty, or unintelligible without security expertise; dominated by tool output or unexplained jargon."
+      2: "Intelligible to a technical manager but not to a member of the Board."
+      3: "Mostly accessible, with several unexplained technical terms that impede understanding."
+      4: "Accessible to a Board member, with occasional technical terms that do not impede understanding."
+      5: "Entirely clear to a non-technical reader and expressed in language on which leadership can act."
+
+  q5_comprehensiveness:
+    question: "Does the summary address the significant findings and associated risks to the organisation?"
+    basis: "§16.2(i)"
+    levels:
+      1: "Addresses none of the significant findings."
+      2: "Mentions findings in aggregate only, such as counts, without identifying the significant ones."
+      3: "Identifies some significant findings but omits others or their risks."
+      4: "Identifies all significant findings, with risks stated for most."
+      5: "Identifies every significant finding together with its risk to the organisation."
+
+  q5_security_posture:
+    question: "Does the summary state the overall security posture and express technical findings as business risks?"
+    basis: "§16.2(i)"
+    levels:
+      1: "No statement of posture and no business risk."
+      2: "A bare rating such as 'Medium' without explanation, or business risk mentioned only generically."
+      3: "States the posture with a brief basis, or expresses some findings as business risks."
+      4: "States the posture with its basis and expresses most significant findings as business risks."
+      5: "States the overall posture with its basis and expresses each significant finding as a business consequence."
+
+  q5_actionability:
+    question: "Are further actions stated so that management can direct remediation?"
+    basis: "§16.2(i), §17(ii)"
+    levels:
+      1: "No further actions stated."
+      2: "Actions stated only as 'remediate the findings' or equivalent."
+      3: "Actions stated, but without priority, ownership or timing."
+      4: "Prioritised actions with either ownership or timing."
+      5: "Prioritised actions with ownership and timing, sufficient for management to direct remediation."
+
+confirmations:
+  meta_section_covers_item: "Does the following report section state the item named? Answer yes only if the item is stated substantively."
+  evidence_relates_to_requirement: "Does the evidence described relate to and support the compliance requirement stated?"
+  certification_relevant: "Is the certification or qualification relevant to performing the audit types listed?"
+  cwe_consistent: "Is the CWE identifier consistent with the weakness described in the observation?"
+  pipeline_stages_identified: "Does the following text identify the stages of the CI/CD pipeline that were assessed?"

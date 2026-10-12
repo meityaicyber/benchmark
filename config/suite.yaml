@@ -1,0 +1,79 @@
+# Cybersecurity Audit Report Benchmarking Suite: initial configuration.
+# Values are those stated in the Suite (6 October 2026). Section 8 calibration
+# replaces them; record the calibration report identifier below when it does.
+
+suite_version: "1.0.0"
+specification: "Cybersecurity Audit Report Benchmarking Suite, 6 October 2026"
+calibration_record: null          # identifier of the Section 8.5 report once calibrated
+
+# Section 7: criterion weights
+weights:
+  Q1: 10
+  Q2: 10
+  Q3: 5
+  Q4: 25
+  Q5: 10
+  Q6: 10
+  Q7: 20
+  Q8: 10
+
+non_compliance_cap: 50            # C_nc
+
+# Section 8.3: checks that have not met their acceptance targets operate in referral mode, in which every
+# result other than Pass is referred for human review (and a Fail is held as Indeterminate) until corrected.
+referral_mode_checks: []
+
+confidence_threshold: 0.7         # theta (Section 12)
+
+# Section 4: sampled distribution scoring
+sampling:
+  n: 5
+  temperature: 0.7
+  base_seed: 20261006
+  variance_threshold: 0.8         # v_max, on the 1 to 5 level scale
+  min_valid_samples: 3            # fewer valid ratings than this: item not evaluable
+
+# Section 6.7 tolerances
+tolerances:
+  cvss: 0.5                       # tau_cvss
+  epss_percentile: 5.0            # tau_epss, percentile points
+  cvss_vector_score: 0.1          # Q6 consistency of vector and score
+  epss_equality: 0.0001           # Q7 observation rating: reported EPSS equals highest entry
+
+# Sub-component weights inside criteria (Section 6 formulae)
+criterion_formulae:
+  Q1: { T_comp: 0.20, M_disc: 0.35, T_r: 0.25, M_spec: 0.20 }
+  Q2: { D: 0.50, R: 0.30, A: 0.20 }
+  Q3: { FC: 0.40, EX: 0.30, IN: 0.30, D_pro: 20 }
+  Q4: { a: 0.15, b: 0.10, c: 0.30, d: 0.25, E: 0.85, CE: 0.15, closure_cap: 40 }
+  Q5: { inconsistency_cap: 60 }
+  Q6: { V_c: 0.45, V_p: 0.45, V_m: 0.10 }
+  Q8: { SD: 0.30, CA: 0.20, TP: 0.10, MD: 0.30, FS: 0.10, env_deduction: 10 }
+  Q1_tool_ipr_deduction: 10
+  Q1_manual_testing_spec_cap: 50
+  Q2_unassessed_regulation_cap: 50
+
+# Text treated as "substantive" (Q1 methodology disclosure, Q4.a structural completeness)
+substantive:
+  min_words: 3
+  placeholders: ["n/a", "na", "nil", "none", "-", "--", "tbd", "not applicable", "not available", "null", "."]
+
+# Section 11.4: maximum age of a Reference Data Package, in days
+reference_data:
+  max_package_age_days: 14
+
+# Language and vision models, held locally at a fixed version (Section 11.1).
+# Any OpenAI-compatible inference server inside the environment (for example vLLM).
+models:
+  text:
+    backend: openai_compatible    # openai_compatible | replay | none
+    base_url: "http://127.0.0.1:8000/v1"
+    model: "local-text-model"
+    model_version: "unset"
+    timeout_seconds: 120
+  vision:
+    backend: openai_compatible
+    base_url: "http://127.0.0.1:8001/v1"
+    model: "local-vision-model"
+    model_version: "unset"
+    timeout_seconds: 180

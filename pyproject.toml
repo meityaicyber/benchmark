@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "certin-benchmark"
+version = "1.0.0"
+description = "Objective 3: Cybersecurity Audit Report Benchmarking Suite (CERT-In CIGU-2025-0002)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "DTU MeitY/CERT-In project team" }]
+dependencies = [
+    "PyYAML>=6.0",
+    "cvss>=3.2",
+    "cryptography>=41",
+]
+
+[project.scripts]
+certin-benchmark = "certin_benchmark.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+certin_benchmark = ["py.typed", "refdata/schema.sql", "data/*.json"]

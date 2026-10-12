@@ -1,0 +1,53 @@
+# Accepted audit standards and limited lists (Guidelines §8(i), §8(ii); Suite MC-05, Q1, Section 9).
+# Names are matched case-insensitively after removing punctuation; any alias counts as a citation.
+# test_case_patterns are regular expressions identifying test cases or controls of the framework,
+# used by Q1 traceability of standards to findings.
+
+comprehensive:
+  ISO/IEC:
+    aliases: ["iso/iec", "iso 27001", "iso/iec 27001", "iso 27002", "iso/iec 27002", "iso 27017", "iso 27018", "iso/iec 27005", "iso 27005", "iso/iec 15408", "iso 15408", "iso/iec 62443", "iec 62443", "iso 22301"]
+    test_case_patterns: ['\bA\.\d{1,2}(\.\d{1,2}){1,2}\b', '\bISO(/IEC)?\s*2700[12]\b']
+  Cyber Security Audit Baseline Requirements:
+    aliases: ["cyber security audit baseline requirements", "cert-in baseline requirements", "audit baseline requirements", "csabr"]
+    test_case_patterns: []
+  CSA Cloud Controls Matrix:
+    aliases: ["csa ccm", "cloud controls matrix", "csa cloud controls matrix", "ccm v4", "ccm"]
+    test_case_patterns: ['\b(AIS|BCR|CCC|CEK|DCS|DSP|GRC|HRS|IAM|IPY|IVS|LOG|SEF|STA|TVM|UEM|A&A)-\d{2}\b']
+  OSSTMM3:
+    aliases: ["osstmm", "osstmm3", "osstmm 3", "open source security testing methodology manual"]
+    test_case_patterns: []
+  OWASP WSTG:
+    aliases: ["owasp wstg", "wstg", "owasp web security testing guide", "web security testing guide", "owasp testing guide", "owasp testing guide v4", "otg"]
+    test_case_patterns: ['\bWSTG-[A-Z]{4}-\d{2}\b', '\bOTG-[A-Z]+-\d{3}\b']
+  OWASP ASVS:
+    aliases: ["owasp asvs", "asvs", "application security verification standard"]
+    test_case_patterns: ['\bASVS\s*V?\d{1,2}\.\d{1,2}(\.\d{1,2})?\b', '\bV\d{1,2}\.\d{1,2}\.\d{1,2}\b']
+  OWASP MSTG:
+    aliases: ["owasp mstg", "mstg", "owasp mastg", "mastg", "mobile security testing guide", "owasp masvs", "masvs"]
+    test_case_patterns: ['\bMSTG-[A-Z]+-\d+\b', '\bMASTG-TEST-\d{4}\b', '\bMASVS-[A-Z]+-\d+\b']
+  OWASP DevSecOps Maturity Model:
+    aliases: ["owasp devsecops maturity model", "dsomm", "devsecops maturity model"]
+    test_case_patterns: []
+
+# Accepted as supporting methodologies (Annexure A); they do not by themselves satisfy MC-05.
+supporting:
+  NIST SP 800-115:
+    aliases: ["nist sp 800-115", "nist 800-115", "sp 800-115", "nist sp800-115"]
+    test_case_patterns: []
+  PTES:
+    aliases: ["ptes", "penetration testing execution standard"]
+    test_case_patterns: []
+  CERT-In Directions 28.04.2022:
+    aliases: ["cert-in directions", "directions dated 28 april 2022", "cert-in directions 28.04.2022", "70b(6) directions"]
+    test_case_patterns: []
+
+# Not standards under §8(ii)
+limited:
+  OWASP Top 10:
+    aliases: ["owasp top 10", "owasp top ten", "owasp top-10", "owasp top 10 2021", "owasp top 10 2017"]
+  SANS Top 25:
+    aliases: ["sans top 25", "sans 25", "cwe top 25", "cwe/sans top 25"]
+  OWASP API Top 10:
+    aliases: ["owasp api top 10", "owasp api security top 10"]
+  OWASP Mobile Top 10:
+    aliases: ["owasp mobile top 10"]
