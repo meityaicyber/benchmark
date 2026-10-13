@@ -9,8 +9,11 @@ Checked against the publishers on 12 October 2026:
   CWE-1395 first appears in 4.10 and CWE-1426 in 4.15.
 - EPSS file formats: '#model_version:...,score_date:...' line from 2022-02-04; no such line before;
   no percentile column before 2021-09-01.
-Synthetic, not real: the EPSS score distribution, the other CVE identifiers (CVE-2099-*), and the
-CERT-In note CIVN-2021-0000 and the empanelment records, which stand in for CERT-In's own data.
+- The NVD mirror's history of CVE-2021-41773 (github.com/fkie-cad/nvd-json-data-feeds): first state of
+  2023-04-24 with lastModified 2022-10-28 and NVD 7.5; NVD 9.8 from 2026-02-17.
+Synthetic, not real: the EPSS score distribution, the other CVE identifiers (CVE-2099-*), the other
+synchronisations of the miniature mirror, and the CERT-In note CIVN-2021-0000 and the empanelment
+records, which stand in for CERT-In's own data.
 """
 
 from __future__ import annotations
@@ -52,6 +55,52 @@ def _nvd_item(cid, score, vector, cwe, modified="2024-11-21T06:26:42.000"):
                                     "description": [{"lang": "en", "value": f"CWE-{cwe}"}]}]}}
 
 
+V31_75 = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+V31_98 = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+ADP = "134c704f-9b21-4f2e-91b3-4a467353bcc0"
+
+# Synchronisations of the mirror: (commit date, CVE, record lastModified, NVD metric, CISA-ADP metric).
+# CVE-2021-41773 follows the real mirror: first seen on 2023-04-24 with lastModified 2022-10-28 and NVD 7.5;
+# a CISA-ADP metric added on 2025-02-04 (not NVD's, so no new NVD value); NVD rescored to 9.8 on 2026-02-17.
+MIRROR_SYNCS = [
+    ("2023-04-24T11:09:08+00:00", "CVE-2021-41773", "2022-10-28T16:16:21.613", (7.5, V31_75), None),
+    ("2023-04-24T11:09:08+00:00", "CVE-2021-42013", "2024-11-21T06:26:42.000", (9.8, V31_98), None),
+    ("2023-04-24T11:09:08+00:00", "CVE-2023-0001", "2024-11-21T06:26:42.000",
+     (6.1, "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"), None),
+    ("2025-02-04T16:00:00+00:00", "CVE-2021-41773", "2025-02-04T15:00:00.000", (7.5, V31_75), (7.5, V31_75)),
+    ("2026-02-17T20:00:00+00:00", "CVE-2021-41773", "2026-02-17T19:49:26.367", (9.8, V31_98), (7.5, V31_75)),
+]
+
+
+def make_nvd_mirror(repo: Path, syncs=MIRROR_SYNCS) -> Path:
+    import os
+    import subprocess
+    repo = Path(repo)
+    if (repo / ".git").exists():
+        return repo
+    repo.mkdir(parents=True, exist_ok=True)
+    git = ["git", "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false"]
+    subprocess.run(git + ["init", "-q"], cwd=repo, check=True)
+    by_date: dict[str, list] = {}
+    for sync in syncs:
+        by_date.setdefault(sync[0], []).append(sync)
+    for date, items in by_date.items():
+        for _, cid, modified, nvd, adp in items:
+            year, num = cid.split("-")[1], cid.split("-")[2]
+            path = repo / f"CVE-{year}" / f"CVE-{year}-{num[:-2]}xx" / f"{cid}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            metrics = [{"source": "nvd@nist.gov", "type": "Primary",
+                        "cvssData": {"version": "3.1", "vectorString": nvd[1], "baseScore": nvd[0]}}]
+            if adp:
+                metrics.append({"source": ADP, "type": "Secondary",
+                                "cvssData": {"version": "3.1", "vectorString": adp[1], "baseScore": adp[0]}})
+            path.write_text(json.dumps({"id": cid, "lastModified": modified, "metrics": {"cvssMetricV31": metrics}}))
+        env = {**os.environ, "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date}
+        subprocess.run(git + ["add", "-A"], cwd=repo, check=True)
+        subprocess.run(git + ["commit", "-q", "-m", date], cwd=repo, check=True, env=env)
+    return repo
+
+
 def make_staging(root: Path, epss_days: list[str] | None = None, seed: int = 7) -> Path:
     root = Path(root)
     rng = random.Random(seed)
@@ -68,26 +117,11 @@ def make_staging(root: Path, epss_days: list[str] | None = None, seed: int = 7) 
     (nvd / "nvdcve-2.0-2021.meta").write_text(
         f"lastModifiedDate:2026-07-01T03:00:01-04:00\r\nsize:{len(raw)}\r\nzipSize:{len(packed)}\r\n"
         f"gzSize:{len(packed)}\r\nsha256:{hashlib.sha256(raw).hexdigest().upper()}\r\n")
-    # NVD change history (initial analysis of CVE-2021-41773 in October 2021)
-    hist = root / "nvd_history"
-    hist.mkdir()
-    (hist / "history.json").write_text(json.dumps({"format": "NVD_CVEHistory", "version": "2.0", "cveChanges": [
-        {"change": {"cveId": "CVE-2021-41773", "eventName": "Initial Analysis", "sourceIdentifier": "nvd@nist.gov",
-                    "created": "2021-10-12T15:43:01.630",
-                    "details": [{"action": "Added", "type": "CVSS V3.1",
-                                 "newValue": "NIST AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"},
-                                {"action": "Added", "type": "CWE", "newValue": "NIST CWE-22"}]}},
-        {"change": {"cveId": "CVE-2021-41773", "eventName": "CVE Modified",
-                    "sourceIdentifier": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
-                    "created": "2025-02-04T15:00:00.000",
-                    "details": [{"action": "Added", "type": "CVSS V3.1",
-                                 "newValue": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"}]}},
-        {"change": {"cveId": "CVE-2021-41773", "eventName": "Reanalysis", "sourceIdentifier": "nvd@nist.gov",
-                    "created": "2026-02-17T19:49:26.367",
-                    "details": [{"action": "Added", "type": "CVSS V3.1",
-                                 "newValue": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"},
-                                {"action": "Removed", "type": "CVSS V3.1",
-                                 "oldValue": "NIST AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"}]}}]}))
+    # NVD history: a miniature of the NVD mirror (one JSON file per CVE; one commit per synchronisation),
+    # read by the same extraction code as the real mirror
+    make_nvd_mirror(root.parent / "nvd-mirror")
+    from certin_benchmark.refdata.fetch import extract_nvd_history
+    extract_nvd_history(root.parent / "nvd-mirror", root)
     # CVE List
     cl = root / "cvelist"
     cl.mkdir()

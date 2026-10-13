@@ -1,6 +1,6 @@
 # Validation of external data
 
-Every external fact the Suite relies on was checked against the publisher's live site or repository on 12 October 2026. This file records what was checked, the result, and the evidence, so that the check can be repeated before each calibration round.
+Every external fact the Suite relies on was checked against the publisher's live site or repository on 12 October 2026, and the sources of NVD history and the CVE List on 13 October 2026, when query APIs were removed from acquisition. This file records what was checked, the result, and the evidence, so that the check can be repeated before each calibration round.
 
 ## CVSS calculation
 
@@ -22,9 +22,9 @@ The 522 v4.0 vectors are exact halves (for example 8.55). The August 2024 snapsh
 | NVD JSON 2.0 yearly feeds (2002 to 2026), modified and recent feeds, `.meta` fields | Verified | nvd.nist.gov/feeds/json/cve/2.0/ |
 | `.meta` sha256 covers the uncompressed JSON | Not stated by NVD; `size` is the uncompressed length. The builder now accepts a hash of either form, checks the size, and records which matched | nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-2021.meta |
 | NVD JSON structure read by the builder (metrics source and type, cvssData, weaknesses) | Verified | services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-2021-41773 |
-| NVD Change History API response fields and value formats | Verified; a third value format (plain `AV:N/...`, used by NVD from 2026) is handled | services.nvd.nist.gov/rest/json/cvehistory/2.0?cveId=CVE-2021-41773 |
-| Change History API limits (120-day window, 5,000 per page, `apiKey` header, pacing) | Not verifiable: NVD's developer pages render client-side. Confirm in a browser before the first package | nvd.nist.gov/developers |
-| CVE List v5 bulk release naming, nested `cves.zip`, record fields, ADP containers | Verified; the builder now reads ADP containers and streams the 691 MB inner archive to disk | github.com/CVEProject/cvelistV5; github.com/CVEProject/cve-schema |
+| NVD Change History API | No longer used (13 October 2026): acquisition uses downloadable datasets only | — |
+| NVD mirror: layout (one NVD JSON 2.0 `cve` object per file, `CVE-YYYY/CVE-YYYY-NNNNxx/`), synchronisation every two hours, history from April 2023, NVD and CVE terms of use in `LICENSES/`, not affiliated with NIST | Verified by cloning the repository. Extraction run on the real mirror for CVE-2021-41773 and CVE-2021-42013 gives NVD 7.5 with lastModified 2022-10-28 (first synchronisation), then 9.8 from 2026-02-17, matching NIST's record; CISA-ADP metrics are ignored | github.com/fkie-cad/nvd-json-data-feeds (commit bee52a7, 13 October 2026) |
+| CVE List v5: repository layout (`cves/YYYY/Nxxx/CVE-*.json`), record fields, ADP containers; bulk release naming and nested `cves.zip` (still read if staged) | Verified; acquisition now clones the repository at its latest commit instead of locating the bulk release through GitHub's API | github.com/CVEProject/cvelistV5; github.com/CVEProject/cve-schema |
 | CISA KEV fields and schema requirements | Verified; the builder now enforces the required fields and the `cveID` pattern | github.com/cisagov/kev-data |
 | EPSS download host, archive start (2021-04-14), percentile definition | Verified | first.org/epss/data_stats; first.org/epss/data; github.com/empiricalsec/epss_scores |
 | EPSS file format | Corrected: files before 2022-02-04 have no model line, and files before 2021-09-01 have no percentile column. Both are now read; the percentile is derived by FIRST's definition where absent. Current model v2026.06.15 | github.com/empiricalsec/epss_scores |
@@ -62,7 +62,7 @@ The 522 v4.0 vectors are exact halves (for example 8.55). The August 2024 snapsh
 
 ## Still to confirm
 
-1. NVD Change History API limits, in a browser at nvd.nist.gov/developers.
+1. CERT-In's acceptance of the NVD mirror (Fraunhofer FKIE) as the source of NVD's earlier values, since NIST's CVE feeds carry only each record's current values and its change history is served through a query API.
 2. The CEA Regulations, 2026 on cea.nic.in, and the IRDAI guidelines on irdai.gov.in.
 3. Whether first.org's hosted CVSS v4.0 calculator includes the November 2024 rounding correction.
 4. The real CERT-In note for CVE-2021-41773, if the sample report is to cite it.

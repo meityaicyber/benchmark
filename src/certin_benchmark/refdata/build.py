@@ -9,8 +9,9 @@ Input layout (a "staging" directory produced by fetch.py or assembled by hand):
 
   staging/
     nvd/nvdcve-2.0-YYYY.json.gz + .meta, nvdcve-2.0-modified.json.gz + .meta
-    nvd_history/*.json              NVD CVE change history API responses
-    cvelist/                        cvelistV5 records (directory tree of CVE-*.json) or *.zip
+    nvd_history/nvd_states.jsonl.gz successive NVD CVSS values from the NVD mirror's git history
+    nvd_history/SOURCE.json         mirror URL, commit and date of first synchronisation (fetch.py)
+    cvelist/                        cvelistV5 records (git clone: directory tree of CVE-*.json) or *.zip
     epss/epss_scores-YYYY-MM-DD.csv.gz
     kev/known_exploited_vulnerabilities.json
     cwe/releases.json               [{"version": "4.15", "release_date": "2024-07-16", "file": "cwec_v4.15.xml"}]
@@ -39,6 +40,7 @@ from typing import Callable, Iterable, Iterator
 
 from .. import cvss_calc
 from ..util import norm_name
+from .nvdrecord import nvd_cwes, nvd_metrics
 
 SCHEMA = Path(__file__).with_name("schema.sql")
 
@@ -173,7 +175,15 @@ class PackageBuilder:
         if name == "epss":
             return  # the EPSS archive itself is the original
         dest = self.out / "originals" / name
-        shutil.copytree(src_dir, dest)
+        if name == "cve_list":
+            # A cloned tree of CVE records is not copied: every record is retained in publisher_record.
+            # The bulk archive (if staged instead) and SOURCE.json, naming the commit, are kept.
+            dest.mkdir(parents=True)
+            for f in sorted(src_dir.iterdir()):
+                if f.is_file():
+                    shutil.copy2(f, dest / f.name)
+        else:
+            shutil.copytree(src_dir, dest, ignore=shutil.ignore_patterns(".git"))
         for p in sorted(dest.rglob("*")):
             if p.is_file():
                 entry["files"].append({"path": str(p.relative_to(self.out)), "sha256": sha256_file(p)})
@@ -198,8 +208,8 @@ class PackageBuilder:
         self.db.execute("ATTACH DATABASE ? AS prev", (str(prev_db),))
         for t in self.TABLES.get(name, []):
             table, _, sel = t.partition(":")
-            if (table == "nvd_cvss" and sel == "feed") or (table == "cve_cwe" and sel == "nvd"):
-                continue  # NVD feed rows are always carried (see _carry_nvd_feed_history)
+            if table == "nvd_cvss" or (table == "cve_cwe" and sel == "nvd"):
+                continue  # NVD feed and history rows are always carried (see _carry_nvd_feed_history)
             where = ""
             if table == "nvd_cvss":
                 where = f" WHERE source = '{sel}'"
@@ -210,12 +220,12 @@ class PackageBuilder:
         self.db.execute("DETACH DATABASE prev")
 
     def _carry_nvd_feed_history(self) -> None:
-        """NVD feed rows of earlier packages are kept, so that 'the latest package on or before the
-        reference date' can be answered from this one package."""
+        """NVD feed and history rows of earlier packages are kept, so that NVD's value as at any reference
+        date can be answered from this one package, and later packages need only the mirror's new history."""
         if not self.previous:
             return
         self.db.execute("ATTACH DATABASE ? AS prev", (str(self.previous / "reference.sqlite"),))
-        self.db.execute("INSERT INTO main.nvd_cvss SELECT * FROM prev.nvd_cvss WHERE source = 'feed'")
+        self.db.execute("INSERT INTO main.nvd_cvss SELECT * FROM prev.nvd_cvss")
         self.db.execute("INSERT INTO main.cve_cwe SELECT * FROM prev.cve_cwe WHERE assigner = 'nvd'")
         r = self.db.execute("SELECT value FROM prev.meta WHERE key = 'earliest_package_date'").fetchone()
         self._earliest = r[0] if r else None
@@ -249,6 +259,7 @@ class PackageBuilder:
             raise SourceError("no NVD CVE JSON 2.0 feeds")
         latest_modified = None
         latest: dict[tuple[str, str], tuple[float, str, str]] = {}
+        self._nvd_current: dict[str, tuple[str, dict]] = {}     # for the check of the NVD mirror
         cwes: dict[str, set[int]] = {}
         count = 0
         # yearly feeds first, then the modified feed so that it supersedes them
@@ -280,27 +291,11 @@ class PackageBuilder:
                 if not cid:
                     continue
                 count += 1
-                modified = (cve.get("lastModified") or "")[:10]
-                metrics = cve.get("metrics", {})
-                for key, version in (("cvssMetricV31", "3.1"), ("cvssMetricV40", "4.0"), ("cvssMetricV30", "3.0")):
-                    chosen = None
-                    for m in metrics.get(key, []):
-                        if m.get("source") == "nvd@nist.gov" or m.get("type") == "Primary":
-                            chosen = m
-                            if m.get("source") == "nvd@nist.gov":
-                                break
-                    if chosen:
-                        cd = chosen.get("cvssData", {})
-                        latest[(cid, version)] = (cd.get("baseScore"), cd.get("vectorString"), modified)
-                ws = set()
-                for w in cve.get("weaknesses", []):
-                    if w.get("source") != "nvd@nist.gov" and w.get("type") != "Primary":
-                        continue
-                    for desc in w.get("description", []):
-                        m = re.match(r"CWE-(\d+)$", desc.get("value", ""))
-                        if m:
-                            ws.add(int(m.group(1)))
-                cwes[cid] = ws
+                modified = cve.get("lastModified") or ""
+                self._nvd_current[cid] = (modified, nvd_metrics(cve))
+                for version, (score, vector) in self._nvd_current[cid][1].items():
+                    latest[(cid, version)] = (score, vector, modified[:10])
+                cwes[cid] = nvd_cwes(cve)
                 self._raw("nvd", cid, cve)
         pkg = self.prepared_on.isoformat()
         for (cid, version), (score, vector, modified) in latest.items():
@@ -309,8 +304,9 @@ class PackageBuilder:
                 "ORDER BY package_date DESC LIMIT 1", (cid, version)).fetchone()
             if prev and prev[0] == score and prev[1] == vector:
                 continue  # unchanged since the previous package: the earlier row continues to apply
+            # valid_from: the record's lastModified date, from which NVD's value has held unchanged
             self.db.execute("INSERT INTO nvd_cvss VALUES (?, ?, ?, ?, ?, ?, 'feed')",
-                            (cid, version, score, vector, pkg, modified))
+                            (cid, version, score, vector, pkg, modified or pkg))
         for cid, ws in cwes.items():
             last = self.db.execute("SELECT max(package_date) FROM cve_cwe WHERE cve_id = ? AND assigner = 'nvd'",
                                    (cid,)).fetchone()[0]
@@ -324,48 +320,54 @@ class PackageBuilder:
         return {"records": count, "publisher_version": latest_modified, "retrieved_at": _mtime(feeds[-1]),
                 "sha256_basis": getattr(self, "_hash_basis", None)}
 
-    @staticmethod
-    def _history_vector(value: str, version: str) -> str | None:
-        """Change-history values seen on the NVD CVE Change History API: 'NIST AV:N/AC:L/...' (2021),
-        a plain 'AV:N/AC:L/...' (NVD from 2026, and ADP sources), and 'NIST (AV:N/AC:M/Au:N/...)' (CVSS v2,
-        which is ignored). A rescore appears as Added (new value) and Removed (old value) in one change."""
-        m = re.search(r"(CVSS:\d\.\d/)?((?:[A-Z]{1,3}:[A-Z]/)*[A-Z]{1,3}:[A-Z])(?![A-Za-z])", value)
-        if not m or "AV:" not in m.group(2):
-            return None
-        body = m.group(2)
-        body = body[body.index("AV:"):]
-        return f"CVSS:{version}/{body}"
+    # Largest share of compared records on which the mirror may differ from NIST's feed
+    MIRROR_MAX_MISMATCH = 0.001
 
     def _load_nvd_history(self) -> dict:
-        files = sorted((self.staging / "nvd_history").glob("*.json"))
-        if not files:
-            raise SourceError("no NVD change history files")
-        count = 0
-        latest = ""
-        for f in files:
-            data = json.loads(f.read_text())
-            for ch in data.get("cveChanges", []):
-                c = ch.get("change", {})
-                cid = (c.get("cveId") or "").upper()
-                created = (c.get("created") or "")[:10]
-                if c.get("sourceIdentifier") not in (None, "nvd@nist.gov"):
+        """NVD's earlier values, from the mirror's git history (fetch.extract_nvd_history).
+
+        Each line states a value NVD held from the record's lastModified time. Before use, the mirror's
+        latest value of every CVE whose lastModified equals that in NIST's feed is compared with NIST's
+        feed; if more than MIRROR_MAX_MISMATCH of them differ, the source fails verification.
+        """
+        d = self.staging / "nvd_history"
+        states = d / "nvd_states.jsonl.gz"
+        if not states.exists():
+            raise SourceError("no NVD history extracted from the mirror (nvd_states.jsonl.gz)")
+        info = json.loads((d / "SOURCE.json").read_text()) if (d / "SOURCE.json").exists() else {}
+        rows = []
+        final: dict[tuple[str, str], tuple] = {}
+        with gzip.open(states, "rt", encoding="utf-8") as fh:
+            for line in fh:
+                r = json.loads(line)
+                cid, version = r["cve_id"].upper(), r["version"]
+                modified = r.get("last_modified") or ""
+                if not modified:
                     continue
-                for det in c.get("details", []):
-                    t = (det.get("type") or "").upper()
-                    version = "4.0" if "4.0" in t else "3.1" if "3.1" in t else "3.0" if "3.0" in t else None
-                    if not version or det.get("action") == "Removed":
+                rows.append((cid, version, r.get("score"), r.get("vector"), modified[:10]))
+                final[(cid, version)] = (modified, r.get("score"), r.get("vector"))
+        current = getattr(self, "_nvd_current", None)
+        check = {"compared": 0, "differ": 0, "examples": []}
+        if current:
+            for cid, (modified, metrics) in current.items():
+                for version in ("3.0", "3.1", "4.0"):
+                    f = final.get((cid, version))
+                    if not f or f[0] != modified:
                         continue
-                    vec = self._history_vector(det.get("newValue") or "", version)
-                    if not vec:
-                        continue
-                    r = cvss_calc.base_score(vec, version)
-                    if r.score is None:
-                        continue
-                    self.db.execute("INSERT INTO nvd_cvss VALUES (?, ?, ?, ?, NULL, ?, 'history')",
-                                    (cid, version, r.score, vec, created))
-                    count += 1
-                    latest = max(latest, created)
-        return {"records": count, "retrieved_at": _mtime(files[-1]), "publisher_version": latest or None}
+                    check["compared"] += 1
+                    if (f[1], f[2]) != metrics.get(version, (None, None)):
+                        check["differ"] += 1
+                        if len(check["examples"]) < 5:
+                            check["examples"].append(f"{cid} CVSS {version}")
+            if check["compared"] and check["differ"] > self.MIRROR_MAX_MISMATCH * check["compared"]:
+                raise SourceError(f"NVD mirror differs from NIST's feed on {check['differ']} of "
+                                  f"{check['compared']} records compared (for example {check['examples']})")
+        else:
+            check["note"] = "NIST's feed unavailable in this preparation; mirror not checked"
+        self.db.executemany("INSERT INTO nvd_cvss VALUES (?, ?, ?, ?, NULL, ?, 'history')", rows)
+        total = self.db.execute("SELECT count(*) FROM nvd_cvss WHERE source = 'history'").fetchone()[0]
+        return {"records": total, "added": len(rows), "retrieved_at": _mtime(states),
+                "publisher_version": info.get("commit_date"), "mirror": info, "check_against_nist_feed": check}
 
     # ---- CVE List ------------------------------------------------------------------
     def _iter_cve_records(self) -> Iterator[dict]:
@@ -385,7 +387,8 @@ class PackageBuilder:
                                     if re.search(r"CVE-\d{4}-\d+\.json$", m):
                                         yield json.loads(inner.read(m))
         for p in sorted(d.rglob("CVE-*.json")):
-            yield json.loads(p.read_text())
+            if ".git" not in p.parts:
+                yield json.loads(p.read_text())
 
     def _load_cve_list(self) -> dict:
         count = 0
@@ -416,7 +419,12 @@ class PackageBuilder:
             self._raw("cve_list", cid, rec)
         if count == 0:
             raise SourceError("no CVE records parsed")
-        return {"records": count, "publisher_version": latest or None}
+        out = {"records": count, "publisher_version": latest or None}
+        src = self.staging / "cvelist" / "SOURCE.json"
+        if src.exists():
+            info = json.loads(src.read_text())
+            out.update({"repository": info, "retrieved_at": info.get("commit_date")})
+        return out
 
     # ---- KEV ------------------------------------------------------------------------
     def _load_kev(self) -> dict:

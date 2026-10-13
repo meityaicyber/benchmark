@@ -40,7 +40,8 @@ def _cvss_check(ctx, chk, label, reported, version, cves, when):
     vals = [rd.nvd_cvss(c, version, when) for c in cves]
     vals = [v for v in vals if v is not None]
     if not vals:
-        chk.add(f"{label} CVSS accuracy", None, f"no NVD score for CVSS {version} as at {when}")
+        chk.add(f"{label} CVSS accuracy", None, f"NVD's CVSS {version} value as at {when} is not known "
+                                                f"from the Reference Data Package")
         return None
     auth = max(vals, key=lambda v: v.score)
     rep = as_float(reported)
@@ -48,8 +49,8 @@ def _cvss_check(ctx, chk, label, reported, version, cves, when):
         chk.add(f"{label} CVSS accuracy", False, "no reported score")
         return auth
     delta = rep - auth.score
-    note = (f"reported {rep}, NVD {auth.score} as at {auth.as_of}"
-            f"{' (reconstructed from change history)' if auth.reconstructed else ''}")
+    note = (f"reported {rep}, NVD {auth.score} (NVD's value since {auth.as_of}"
+            f"{', from the NVD mirror history' if auth.reconstructed else ''})")
     chk.add(f"{label} CVSS accuracy", abs(delta) <= tau + 1e-9, note)
     return auth
 

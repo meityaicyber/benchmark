@@ -2,8 +2,9 @@
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 
--- NVD CVSS. Feed rows carry the date of the package that recorded them (package_date);
--- rows reconstructed from the NVD change history carry only valid_from and source = 'history'.
+-- NVD CVSS. Each row is a value NVD held from valid_from (the record's lastModified date).
+-- source = 'feed': from NIST's feeds, with the date of the package that recorded it (package_date);
+-- source = 'history': from the git history of the NVD mirror, without a package_date.
 CREATE TABLE IF NOT EXISTS nvd_cvss (
     cve_id TEXT NOT NULL, version TEXT NOT NULL, score REAL, vector TEXT,
     package_date TEXT, valid_from TEXT, source TEXT NOT NULL

@@ -18,8 +18,8 @@ For each report the Suite returns a compliance status (Compliant, Non-compliant 
 | `src/certin_benchmark/calibration/` | Agreement measures, reference set split, weight and threshold fitting (Section 8) |
 | `config/suite.yaml` | Weights, cap, thresholds, tolerances, sampling and model settings |
 | `curated/` | Curated reference lists transferred inside each Reference Data Package (Section 11.1) |
-| `tests/` | 91 tests, including an end-to-end run on a sample report and a synthetic signed package |
-| `docs/VALIDATION.md` | Check of every external fact against the publishers' sites, 12 October 2026 |
+| `tests/` | 93 tests, including an end-to-end run on a sample report and a synthetic signed package |
+| `docs/VALIDATION.md` | Check of every external fact against the publishers' sites, 12 and 13 October 2026 |
 | `tools/` | Scripts that re-validate the CVSS reference vectors against the specification and FIRST's calculator |
 
 ## Installation
@@ -68,12 +68,26 @@ Every sampled item records its n ratings, distribution, score, variance, one-lin
 
 ## Reference Data Package
 
-The Suite reads every external source from a dated, signed package (Section 11). The workflow:
+The Suite reads every external source from a dated, signed package (Section 11). Each source is obtained as a complete downloadable dataset and kept as a local knowledge database: the package's SQLite database (`reference.sqlite`) with its EPSS daily archive and curated lists. No query API is called when the package is prepared, and no external service is contacted when a report is evaluated; the only network connection during evaluation is to the local model server inside the environment.
+
+| Source | Dataset downloaded | From |
+| --- | --- | --- |
+| NVD (current values) | JSON 2.0 yearly, modified and recent feeds with `.meta` files | nvd.nist.gov/feeds/json/cve/2.0/ |
+| NVD (earlier values) | Git history of the NVD mirror (one JSON record per CVE, synchronised every two hours since April 2023) | github.com/fkie-cad/nvd-json-data-feeds |
+| CVE List | Git repository of CVE records | github.com/CVEProject/cvelistV5 |
+| EPSS | Daily score files from 2021-04-14 | epss.empiricalsecurity.com |
+| KEV | Catalogue file | cisa.gov |
+| CWE | Catalogue release files | cwe.mitre.org |
+| CERT-In advisories, empanelment records | Files supplied by CERT-In | CERT-In |
+
+The workflow:
 
 1. On the preparation host (outside the CERT-In environment):
    ```
-   certin-benchmark rdp fetch --staging staging/ --epss-from 2021-04-14 --history-from 2021-01-01 \
-       --cwe-releases cwe_releases.json          # first package; later packages use --epss-days 7
+   certin-benchmark rdp fetch --staging staging/ --epss-from 2021-04-14 --nvd-mirror nvd-mirror/ \
+       --cwe-releases cwe_releases.json          # first package
+   certin-benchmark rdp fetch --staging staging/ --epss-days 7 --nvd-mirror nvd-mirror/ \
+       --history-since <previous package date>   # later packages
    # place CERT-In advisories (certin_advisories/advisories.json) and empanelment records (empanelment/*.json)
    certin-benchmark rdp build --staging staging/ --out-root packages/ --previous packages/RDP-<previous>
    certin-benchmark rdp sign packages/RDP-<date> --key private.pem
@@ -86,7 +100,9 @@ The Suite reads every external source from a dated, signed package (Section 11).
    ```
    Import verifies the signature and every file hash, rejects unlisted files, and never overwrites an existing package.
 
-Lookups follow Section 11.3: EPSS from the daily file for the reference date; KEV by date of addition; NVD scores and NVD CWE assignments from the latest package on or before the reference date, or reconstructed from the NVD change history before the earliest package; CWE validity from the catalogue in force on the date; advisories issued on or before the date; empanelment records from the set in force on the release date.
+The first `fetch` clones the NVD mirror with its full history and reads it once, which is the slowest step of the first preparation; later preparations update the clone and read only synchronisations since the previous package, whose history rows are carried into the new one. Before the mirror's values are used, the build compares the mirror's latest value of every CVE with NIST's own feed wherever both carry the same lastModified time; if more than 0.1% differ, the mirror's history is not used in that package. The comparison is recorded in the manifest.
+
+Lookups follow Section 11.3: EPSS from the daily file for the reference date; KEV by date of addition; NVD scores from the NVD state in force on the reference date (each value holds from the record's lastModified date, from NIST's feeds or the mirror's history), and NVD CWE assignments from the latest package on or before the reference date; CWE validity from the catalogue in force on the date; advisories issued on or before the date; empanelment records from the set in force on the release date.
 
 Input formats for the two CERT-In sources are defined in `src/certin_benchmark/refdata/build.py`. `rdp keygen` creates the Ed25519 key pair.
 
@@ -128,14 +144,16 @@ The specification leaves the following points open. The code takes the reading s
 13. **Q8.** A category excluded with a reason is not penalised under CA (Section 6.8, final paragraph), since the schema does not record who made the exclusion.
 14. **Section 10.1.** An obligation is reported Pass, Fail or Not recorded. A missing conference or Board presentation date is Not recorded.
 15. **Sampling.** v_max = 0.8 and a minimum of three valid ratings are initial values for calibration.
-16. **CVSS v4.0 rounding.** Scores that are exact halves (522 of 104,976 base vectors) are rounded half up, as the `cvss` library and Red Hat's corrected reference calculator do. The August 2024 calculator snapshot in FIRST's GitHub organisation gives 0.1 less for these vectors.
+16. **NVD values before the earliest recorded state.** NVD's value on a date is known only from the earliest state recorded for that CVE: the record's lastModified date in the mirror's first synchronisation (24 April 2023) or in NIST's feed. For an earlier date the Q7 CVSS accuracy check of that CVE is not evaluable and is excluded, as Section 6.7 provides for a check with no authoritative value. Reports with observations from 2021 and 2022 are affected where NVD changed the record after the observation.
+17. **NVD mirror.** NVD's earlier values come from Fraunhofer FKIE's mirror of NVD records rather than from NIST, since NIST's CVE feeds carry only each record's current values and its change history is served through a query API. The build checks the mirror against NIST's feed before use (see the Reference Data Package). CERT-In's acceptance of the mirror as a source under Section 11.2 is to be confirmed.
+18. **CVSS v4.0 rounding.** Scores that are exact halves (522 of 104,976 base vectors) are rounded half up, as the `cvss` library and Red Hat's corrected reference calculator do. The August 2024 calculator snapshot in FIRST's GitHub organisation gives 0.1 less for these vectors.
 
 ## Known limitations
 
 * Image proof-of-concept entries need the image files beside the JSON (`--assets-dir`) and a vision model. Without them those entries are not evaluated and the composite score is provisional.
 * CWE validity as at a past date depends on every CWE release since that date being staged; `rdp fetch --cwe-releases` takes the list.
 * The KEV catalogue is checked against the required fields and patterns of CISA's published schema in code rather than with a JSON Schema validator, to avoid a further dependency.
-* The NVD Change History API limits used by `rdp fetch` (120-day window, 5,000 results a page, request pacing) could not be re-read from NVD's documentation on 12 October 2026 and should be confirmed before the first package is prepared.
+* `rdp fetch` needs `git` on the preparation host. Inside the CERT-In environment `git` is not needed.
 * Engagement module checks for third-party certificates, network devices, pipelines and forensics use curated keyword lists in `curated/modules.yaml`.
 
 ## Tests
@@ -144,4 +162,4 @@ The specification leaves the following points open. The code takes the reading s
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-`tests/fixtures/staging.py` builds a synthetic package (NVD, change history, CVE List, EPSS, KEV, CWE, advisories, empanelment) that is signed and imported before the tests run. `tests/fixtures/sample_report.json` is a complete master schema v2 report.
+`tests/fixtures/staging.py` builds a synthetic package (NVD, a miniature git repository in the layout of the NVD mirror, CVE List, EPSS, KEV, CWE, advisories, empanelment) that is signed and imported before the tests run. `tests/fixtures/sample_report.json` is a complete master schema v2 report.

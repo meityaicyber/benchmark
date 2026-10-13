@@ -70,6 +70,25 @@ class Package(unittest.TestCase):
         self.assertTrue(verify_package(built, workspace() / "key.pub")["ok"])
 
 
+    def test_nvd_mirror_that_differs_from_nist_feed_is_not_used(self):
+        from staging import MIRROR_SYNCS, make_nvd_mirror
+        from certin_benchmark.refdata.fetch import extract_nvd_history
+        tmp = Path(tempfile.mkdtemp())
+        st = make_staging(tmp / "staging3", epss_days=["2026-08-26"])
+        # a mirror whose latest CVE-2023-0001 state carries NIST's lastModified but a different score
+        bad = [s if s[1] != "CVE-2023-0001" else (s[0], s[1], s[2], (9.0, s[3][1]), None) for s in MIRROR_SYNCS]
+        make_nvd_mirror(tmp / "bad-mirror", bad)
+        extract_nvd_history(tmp / "bad-mirror", st)
+        built = PackageBuilder(st, ROOT / "curated", tmp / "out", prepared_on=dt.date(2026, 8, 27),
+                               log=lambda m: None).build()
+        h = json.loads((built / "manifest.json").read_text())["sources"]["nvd_history"]
+        self.assertEqual(h["status"], "unavailable")
+        self.assertIn("differs from NIST's feed on 1 of 3", h["error"])
+        with ReferenceData(built) as rd:
+            self.assertIsNone(rd.nvd_cvss("CVE-2021-41773", "3.1", dt.date(2025, 6, 1)))   # no history rows
+            self.assertEqual(rd.nvd_cvss("CVE-2021-41773", "3.1", dt.date(2026, 7, 9)).score, 9.8)  # NIST's feed
+
+
 class AsAtDate(unittest.TestCase):
     def test_kev_and_advisories_as_at_date(self):
         rd = refdata()

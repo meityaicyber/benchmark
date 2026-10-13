@@ -110,8 +110,8 @@ def cmd_rdp(a: argparse.Namespace) -> int:
         if not a.cwe_releases:
             print("warning: no --cwe-releases given; stage every CWE release since the earliest reference date needed",
                   file=sys.stderr)
-        if a.history_from:
-            fetch.fetch_nvd_history(st, _date(a.history_from), today, a.nvd_api_key)
+        if not a.no_history:
+            fetch.fetch_nvd_history(st, Path(a.nvd_mirror), _date(a.history_since))
         if a.cwe_releases:
             fetch.fetch_cwe(st, json.loads(Path(a.cwe_releases).read_text()))
         print(f"staged in {st}; add CERT-In advisories and empanelment records received from CERT-In")
@@ -197,12 +197,15 @@ def build_parser() -> argparse.ArgumentParser:
     im.add_argument("package")
     im.add_argument("--store", required=True)
     im.add_argument("--key", required=True)
-    f = rs.add_parser("fetch", help="preparation host only: download sources from official distribution points")
+    f = rs.add_parser("fetch", help="preparation host only: download every source as a complete dataset (no query APIs)")
     f.add_argument("--staging", required=True)
     f.add_argument("--epss-days", type=int, default=7, help="days of EPSS files to add since the previous package")
     f.add_argument("--epss-from", help="first EPSS day to fetch; 2021-04-14 for the complete archive on a first package")
-    f.add_argument("--history-from")
-    f.add_argument("--nvd-api-key")
+    f.add_argument("--nvd-mirror", default="nvd-mirror",
+                   help="local clone of the NVD mirror (full git history), created on first use and updated after")
+    f.add_argument("--history-since", help="read only the mirror's synchronisations since this date; give the "
+                                           "previous package's date when building on a previous package")
+    f.add_argument("--no-history", action="store_true", help="do not stage NVD history (the previous package's is carried)")
     f.add_argument("--cwe-releases", help="JSON list of {version, release_date}")
     r.set_defaults(fn=cmd_rdp)
 

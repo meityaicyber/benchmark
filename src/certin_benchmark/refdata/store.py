@@ -89,23 +89,21 @@ class ReferenceData:
 
     # ---- NVD --------------------------------------------------------------------
     def nvd_cvss(self, cve_id: str, version: str, as_of: _dt.date) -> NvdScore | None:
-        """Score as at the reference date: latest package on or before it, else change history."""
-        earliest = self._meta("earliest_package_date")
-        d = as_of.isoformat()
-        if earliest and d >= earliest:
-            r = self.db.execute(
-                "SELECT score, vector, package_date FROM nvd_cvss WHERE cve_id = ? AND version = ? "
-                "AND source = 'feed' AND package_date <= ? ORDER BY package_date DESC LIMIT 1",
-                (cve_id, version, d)).fetchone()
-            if r and r["score"] is not None:
-                return NvdScore(float(r["score"]), r["vector"], False, r["package_date"])
-            return None
+        """NVD's value as at the reference date.
+
+        Every row states a value NVD held from valid_from (the record's lastModified date): 'feed' rows
+        from NIST's feeds in each package, 'history' rows from the NVD mirror's git history. The value as
+        at the date is the row with the latest valid_from on or before it; NIST's feed is preferred where
+        both give the same date. None where NVD's value on that date is not known (before the earliest
+        state recorded) or NVD had no value of that version.
+        """
         r = self.db.execute(
-            "SELECT score, vector, valid_from FROM nvd_cvss WHERE cve_id = ? AND version = ? "
-            "AND source = 'history' AND valid_from <= ? ORDER BY valid_from DESC LIMIT 1",
-            (cve_id, version, d)).fetchone()
+            "SELECT score, vector, valid_from, source FROM nvd_cvss WHERE cve_id = ? AND version = ? "
+            "AND coalesce(valid_from, package_date) <= ? "
+            "ORDER BY coalesce(valid_from, package_date) DESC, source = 'feed' DESC, package_date DESC LIMIT 1",
+            (cve_id, version, as_of.isoformat())).fetchone()
         if r and r["score"] is not None:
-            return NvdScore(float(r["score"]), r["vector"], True, r["valid_from"])
+            return NvdScore(float(r["score"]), r["vector"], r["source"] == "history", r["valid_from"])
         return None
 
     def assigned_cwes(self, cve_id: str, as_of: _dt.date | None = None) -> tuple[list[int], str | None]:
