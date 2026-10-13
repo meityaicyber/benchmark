@@ -42,7 +42,10 @@ def cmd_evaluate(a: argparse.Namespace) -> int:
     rc = 0
     for path in a.reports:
         data = json.loads(Path(path).read_text())
-        rec = engine.evaluate(data, overrides=overrides, evaluated_on=_date(a.evaluated_on))
+        from .images import ImageResolver
+        images = ImageResolver.for_report(path, a.assets_dir, a.image_manifest if len(a.reports) == 1 else None,
+                                          a.deep_storage)
+        rec = engine.evaluate(data, overrides=overrides, evaluated_on=_date(a.evaluated_on), images=images)
         out = json.dumps(rec.to_dict(), indent=2, ensure_ascii=False, default=str)
         if a.out:
             target = Path(a.out)
@@ -163,7 +166,11 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--rdp-store", help="store of imported packages; the latest is used")
     e.add_argument("--config", help="suite.yaml (default: config/suite.yaml)")
     e.add_argument("--curated", help="curated lists directory (default: from the package, else curated/)")
-    e.add_argument("--assets-dir", help="directory holding proof-of-concept images referenced by the report")
+    e.add_argument("--assets-dir", help="directory holding proof-of-concept images referenced by path")
+    e.add_argument("--image-manifest", help="Objective 1 image manifest for the report (default: the one named in "
+                                            "<report>.meta.json beside the report)")
+    e.add_argument("--deep-storage", help="root of Objective 1 deep storage (objects/ and manifests/), used to find "
+                                          "manifests by document_id and stored images by SHA-256")
     e.add_argument("--overrides", help="JSON of reviewer decisions: checks, criteria, items")
     e.add_argument("--no-models", action="store_true", help="run without language or vision models")
     e.add_argument("--replay", help="recompute from recorded model responses")

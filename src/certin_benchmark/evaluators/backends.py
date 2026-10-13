@@ -13,7 +13,7 @@ import json
 import mimetypes
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -25,6 +25,10 @@ class ModelCall:
     seed: int
     temperature: float
     image_path: str | None = None
+    extra_images: list = field(default_factory=list)     # further images, after image_path, in order
+
+    def images(self) -> list[str]:
+        return ([self.image_path] if self.image_path else []) + list(self.extra_images)
 
 
 class Backend(Protocol):
@@ -53,14 +57,15 @@ class OpenAICompatibleBackend:
 
     def complete(self, call: ModelCall) -> str:
         content: list | str
-        if call.image_path:
-            p = Path(call.image_path)
-            if not p.exists():
-                raise BackendUnavailable(f"image not found: {call.image_path}")
-            mime = mimetypes.guess_type(p.name)[0] or "image/png"
-            data = base64.b64encode(p.read_bytes()).decode()
-            content = [{"type": "text", "text": call.user},
-                       {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}]
+        if call.images():
+            content = [{"type": "text", "text": call.user}]
+            for img in call.images():
+                p = Path(img)
+                if not p.exists():
+                    raise BackendUnavailable(f"image not found: {img}")
+                mime = mimetypes.guess_type(p.name)[0] or "image/png"
+                data = base64.b64encode(p.read_bytes()).decode()
+                content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
         else:
             content = call.user
         body = {
@@ -97,7 +102,9 @@ class ReplayBackend:
     @staticmethod
     def key(call: ModelCall) -> str:
         import hashlib
-        h = hashlib.sha256((call.system + "\x00" + call.user + "\x00" + (call.image_path or "")).encode()).hexdigest()
+        # images enter the key by their content, so a replay does not depend on where the files are
+        digests = [hashlib.sha256(Path(i).read_bytes()).hexdigest() if Path(i).is_file() else i for i in call.images()]
+        h = hashlib.sha256((call.system + "\x00" + call.user + "\x00" + "\x00".join(digests)).encode()).hexdigest()
         return f"{h}:{call.seed}"
 
     def complete(self, call: ModelCall) -> str:

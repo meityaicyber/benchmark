@@ -110,14 +110,27 @@ def poc(ctx: Context, cr, o: dict, j: int, rec: dict) -> float | None:
     originals = [d for d in originals if d]
     claim = {"observation_description": o.get("observation_description"), "title": o.get("title"),
              "affected_asset": o.get("affected_asset")}
+    # Images behind the entries (Objective 1 tags resolved through the image manifest), resolved once
+    resolved = {}
+    for k, p in enumerate(entries):
+        if str(p.get("type") or "").lower() == "image":
+            resolved[k] = ctx.resolve_image(p.get("reference"))
+    original_hashes = {r.sha256 for k, r in resolved.items() if r.sha256 and not entries[k].get("is_retest")}
+    provenance = cr.reference_values.setdefault("proof_of_concept_images", {})
+    if ctx.images is not None and "image_source" not in cr.reference_values:
+        cr.reference_values["image_source"] = ctx.images.describe()
     gs = []
     for k, p in enumerate(entries):
         pid = f"Q4.c.{fid}.poc{p.get('sr_no', k + 1)}"
-        is_image = str(p.get("type") or "").lower() == "image"
-        image = ctx.image_path(p.get("reference")) if is_image else None
+        is_image = k in resolved
+        image = resolved[k].path if is_image else None
+        if is_image:
+            r = resolved[k]
+            provenance[pid] = {"reference": p.get("reference"), "file": r.path, "sha256": r.sha256, "page": r.page,
+                               **({"problem": r.reason} if r.path is None else {})}
         if is_image and image is None:
-            cr.referrals.append(f"{pid}: image '{p.get('reference')}' not supplied with the standardised report; not evaluated")
-            cr.not_evaluated.append(f"{pid} (image not supplied)")
+            cr.referrals.append(f"{pid}: {resolved[k].reason}; not evaluated")
+            cr.not_evaluated.append(f"{pid} (image not available)")
             continue
         if is_image and not ctx.evaluator.vision_available:
             msg = "vision evaluator not configured; image proof-of-concept entries not evaluated"
@@ -139,15 +152,21 @@ def poc(ctx: Context, cr, o: dict, j: int, rec: dict) -> float | None:
             aspects.append(add_sampled(cr, ctx.evaluator.score(f"{pid}.redaction", "q4c_redaction", content, evaluator, image)))
         if p.get("is_retest") is True:
             cap = parse_date(p.get("capture_date"))
-            if cap is None or (originals and cap <= max(originals)):
+            if is_image and resolved[k].sha256 in original_hashes:
+                aspects.append(add_sampled(cr, ctx.evaluator.fixed(
+                    f"{pid}.retest", "q4c_retest_distinctness", 0.0,
+                    "retest image is byte-for-byte the same image as original evidence of this finding")))
+            elif cap is None or (originals and cap <= max(originals)):
                 aspects.append(add_sampled(cr, ctx.evaluator.fixed(
                     f"{pid}.retest", "q4c_retest_distinctness", 0.0,
                     "retest capture date not later than the original evidence")))
             else:
                 orig_desc = [q.get("description") for q in entries if not q.get("is_retest")]
+                orig_images = [resolved[i].path for i, q in enumerate(entries)
+                               if i in resolved and resolved[i].path and not q.get("is_retest")] if is_image else []
                 aspects.append(add_sampled(cr, ctx.evaluator.score(
                     f"{pid}.retest", "q4c_retest_distinctness", content, evaluator, image,
-                    context={"original_evidence": orig_desc})))
+                    context={"original_evidence": orig_desc}, extra_images=orig_images)))
         vals = [a for a in aspects if a is not None]
         if len(vals) == len(aspects):
             gs.append(sum(vals) / len(vals))

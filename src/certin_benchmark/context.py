@@ -9,6 +9,7 @@ from typing import Any
 
 from .config import SuiteConfig
 from .evaluators.sampling import SampledEvaluator
+from .images import ImageResolver, ResolvedImage
 from .refdata.store import ReferenceData
 from .report import Report
 from .util import contains_phrase, is_present, is_substantive
@@ -21,6 +22,7 @@ class Context:
     evaluator: SampledEvaluator
     refdata: ReferenceData | None = None
     assets_dir: Path | None = None
+    images: ImageResolver | None = None
     modules: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     used_confidence: dict[str, float] = field(default_factory=dict)
@@ -40,13 +42,15 @@ class Context:
         for p, c in self.report.confidence_entries(patterns):
             self.used_confidence[p] = c
 
+    def resolve_image(self, reference: str | None) -> ResolvedImage:
+        """The file behind a proof-of-concept reference: an Objective 1 image tag through the image
+        manifest and deep storage, or a path (see images.py)."""
+        if self.images is None:
+            self.images = ImageResolver(self.assets_dir)
+        return self.images.resolve(reference)
+
     def image_path(self, reference: str | None) -> str | None:
-        if not reference:
-            return None
-        p = Path(reference)
-        if not p.is_absolute() and self.assets_dir:
-            p = self.assets_dir / reference
-        return str(p) if p.exists() else None
+        return self.resolve_image(reference).path
 
     def inaccessible_sr_nos(self) -> set[str]:
         return {str(i.get("asset_sr_no")) for i in (self.report.get("engagement_scope.inaccessible_assets") or [])

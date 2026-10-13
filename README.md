@@ -13,12 +13,13 @@ For each report the Suite returns a compliance status (Compliant, Non-compliant 
 | `src/certin_benchmark/criteria/q1.py` to `q8.py` | Quality criteria Q1 to Q8 (Section 6) |
 | `src/certin_benchmark/modules.py` | Engagement modules and their checks (Section 9) |
 | `src/certin_benchmark/record_checks.py` | Record checks (Section 10.1) |
+| `src/certin_benchmark/images.py` | Proof-of-concept images: Objective 1 tags resolved through the image manifest and deep storage |
 | `src/certin_benchmark/evaluators/` | Sampled distribution scoring and local model backends (Section 4) |
 | `src/certin_benchmark/refdata/` | Reference Data Package: acquisition, build, signing, import, as-at-date lookups (Section 11) |
 | `src/certin_benchmark/calibration/` | Agreement measures, reference set split, weight and threshold fitting (Section 8) |
 | `config/suite.yaml` | Weights, cap, thresholds, tolerances, sampling and model settings |
 | `curated/` | Curated reference lists transferred inside each Reference Data Package (Section 11.1) |
-| `tests/` | 93 tests, including an end-to-end run on a sample report and a synthetic signed package |
+| `tests/` | 98 tests, including an end-to-end run on a sample report and a synthetic signed package |
 | `docs/VALIDATION.md` | Check of every external fact against the publishers' sites, 12 and 13 October 2026 |
 | `tools/` | Scripts that re-validate the CVSS reference vectors against the specification and FIRST's calculator |
 
@@ -34,14 +35,15 @@ pip install --no-index --find-links wheels .   # inside the environment
 ## Evaluating a report
 
 ```
-certin-benchmark evaluate report.json --rdp-store /srv/rdp --assets-dir report_images/ --out record.json
+certin-benchmark evaluate outputs/report.json --rdp-store /srv/rdp --deep-storage /srv/deep_storage --out record.json
 certin-benchmark summary record.json
 ```
 
 The command exits with status 2 for a non-compliant report. Options:
 
 * `--rdp` or `--rdp-store`: the imported Reference Data Package, or the store from which the latest is taken.
-* `--assets-dir`: directory holding the proof-of-concept images referenced in `proof_of_concept[].reference`.
+* `--deep-storage` and `--image-manifest`: where the proof-of-concept images are (see "Proof-of-concept images" below). Without either, the manifest named in `report.meta.json` beside the report is used.
+* `--assets-dir`: directory holding proof-of-concept images whose `reference` is a file path rather than an Objective 1 tag.
 * `--overrides`: reviewer decisions (Section 2, principle 8), as JSON:
   ```json
   {"checks":   {"MC-10": {"result": "Fail", "reviewer": "name", "reason": "not declared"}},
@@ -59,6 +61,18 @@ from certin_benchmark.evaluators import backend_from_config
 engine = BenchmarkEngine(refdata="/srv/rdp/RDP-2026-10-12", text_backend=..., vision_backend=...)
 record = engine.evaluate(report_json)
 ```
+
+## Proof-of-concept images
+
+Objective 1 removes every figure from a report before its model reads the pages, stores the image in deep storage under its SHA-256, and writes a tag such as `[IMAGE_PAGE_12_FIG_1]` in its place. For image evidence the tag is the value of `proof_of_concept[].reference`, and the image manifest (`deep_storage/manifests/<document_id>.json`) maps each tag to the stored object. The run report beside the JSON (`<name>.meta.json`) names the manifest and the document.
+
+For each image entry under Q4.c the Suite:
+
+1. follows the tag through the manifest to the stored object (by its URI, or by SHA-256 under `--deep-storage` if storage has moved) and checks that the file still hashes to the manifest's SHA-256;
+2. sends the image itself to the vision model, with the observation it is meant to prove, and rates legibility, relevance to the claim and redaction, five samples each;
+3. for a retest entry, scores retest distinctness 0 without the model where the retest image is byte-for-byte an original image of the same finding; otherwise sends the retest image together with the finding's original images, so the model compares the two.
+
+An entry whose tag is not in the manifest, whose stored object is missing or altered, or for which no manifest was supplied, is not scored: it is referred for human review with the reason, and the composite score is designated provisional. The record lists, for every image entry, the tag, the file used, its SHA-256 and page (`reference_values.proof_of_concept_images` of Q4).
 
 ## Language and vision models
 
@@ -150,7 +164,7 @@ The specification leaves the following points open. The code takes the reading s
 
 ## Known limitations
 
-* Image proof-of-concept entries need the image files beside the JSON (`--assets-dir`) and a vision model. Without them those entries are not evaluated and the composite score is provisional.
+* Image proof-of-concept entries need Objective 1's deep storage (or the image files) and a vision model. Without them those entries are not evaluated and the composite score is provisional.
 * CWE validity as at a past date depends on every CWE release since that date being staged; `rdp fetch --cwe-releases` takes the list.
 * The KEV catalogue is checked against the required fields and patterns of CISA's published schema in code rather than with a JSON Schema validator, to avoid a further dependency.
 * `rdp fetch` needs `git` on the preparation host. Inside the CERT-In environment `git` is not needed.
