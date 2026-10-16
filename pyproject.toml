@@ -15,6 +15,10 @@ dependencies = [
     "cryptography>=41",
 ]
 
+[project.optional-dependencies]
+# preparation host only: conversion of CERT-In's PDF list of empanelled organisations
+preparation = ["pdfplumber>=0.10"]
+
 [project.scripts]
 certin-benchmark = "certin_benchmark.cli:main"
 

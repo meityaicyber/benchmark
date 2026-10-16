@@ -39,12 +39,20 @@ CREATE TABLE IF NOT EXISTS advisory_cve (advisory_id TEXT NOT NULL, cve_id TEXT 
 CREATE INDEX IF NOT EXISTS ix_advisory_cve ON advisory_cve (cve_id);
 CREATE TABLE IF NOT EXISTS advisory_product (advisory_id TEXT NOT NULL, product TEXT NOT NULL);
 
+-- CERT-In empanelment records: one set per list received from CERT-In (set_date). CERT-In publishes no
+-- identifier for an organisation; org_id is derived from its name, and empanel_org_name holds every
+-- normalised form of the name under which it is listed. A person carries the date of the organisation's
+-- declaration ("Information as provided ... on"), where the list holds more than one for it.
 CREATE TABLE IF NOT EXISTS empanel_org (
-    set_date TEXT NOT NULL, org_id TEXT NOT NULL, org_name TEXT, valid_from TEXT, valid_to TEXT
+    set_date TEXT NOT NULL, org_id TEXT NOT NULL, org_name TEXT, valid_from TEXT, valid_to TEXT,
+    list_no INTEGER, information_as_on TEXT, personnel_listed INTEGER, manpower_statement TEXT, details TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_empanel_org ON empanel_org (org_id, set_date);
+CREATE TABLE IF NOT EXISTS empanel_org_name (set_date TEXT NOT NULL, org_id TEXT NOT NULL, name_norm TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_empanel_org_name ON empanel_org_name (name_norm, set_date);
 CREATE TABLE IF NOT EXISTS empanel_person (
-    set_date TEXT NOT NULL, org_id TEXT NOT NULL, name TEXT, name_norm TEXT, designation TEXT
+    set_date TEXT NOT NULL, org_id TEXT NOT NULL, name TEXT, name_norm TEXT, designation TEXT,
+    qualifications TEXT, experience TEXT, experience_years REAL, with_organisation TEXT, declared_on TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_empanel_person ON empanel_person (org_id, set_date, name_norm);
 

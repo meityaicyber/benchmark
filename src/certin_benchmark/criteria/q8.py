@@ -95,7 +95,12 @@ def module_checks(ctx: Context, cr) -> float | None:
         return None
     for r in rows:
         if not r["met"]:
-            cr.deficiencies.append(f"module {r['module']}: {r['description']} not met")
+            added = " (check pending CERT-In confirmation)" if r.get("basis", "").startswith("pending") else ""
+            cr.deficiencies.append(f"module {r['module']}: {r['description']} not met{added}")
+    added = sorted({r["check"] for r in rows if r.get("basis", "").startswith("pending")})
+    if added:
+        cr.notes.append(f"MD includes {len(added)} module checks added from CERT-In's documents, pending CERT-In's "
+                        f"confirmation: {', '.join(added)}")
     return 100.0 * sum(r["met"] for r in rows) / len(rows)
 
 

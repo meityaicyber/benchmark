@@ -15,7 +15,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..util import norm_name
+from ..util import norm_person
 
 
 @dataclass
@@ -258,25 +258,78 @@ class ReferenceData:
         return dict(r) if r else None
 
     # ---- empanelment records ------------------------------------------------------------
-    def empanelment(self, org_id: str, on: _dt.date) -> dict | None:
-        """The set in force on the date (latest set dated on or before it); else the earliest set."""
-        sets = [r["set_date"] for r in self.db.execute(
-            "SELECT DISTINCT set_date FROM empanel_org ORDER BY set_date")]
+    def _has_table(self, name: str) -> bool:
+        return self.db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() is not None
+
+    def empanelment(self, org_id: str | None, on: _dt.date, org_name: str | None = None) -> dict | None:
+        """The records of an organisation in the set in force on the date (the latest set dated on or before
+        it, else the earliest set), found by identifier or else by name.
+
+        CERT-In publishes no identifier, so the name is the usual key: it must correspond exactly, after
+        normalisation (case, 'M/s', punctuation, legal-form words), to a name under which the organisation is
+        listed. Where the organisation's list entry holds more than one declaration of its manpower, the
+        declaration made on or before the date is applied, else the earliest.
+        """
+        from .empanelment_pdf import org_name_variants
+        sets = [r["set_date"] for r in self.db.execute("SELECT DISTINCT set_date FROM empanel_org ORDER BY set_date")]
         if not sets:
             return None
         d = on.isoformat()
-        prior = [s for s in sets if s <= d]
+        prior = [x for x in sets if x <= d]
         chosen, earliest_used = (prior[-1], False) if prior else (sets[0], True)
-        org = self.db.execute("SELECT * FROM empanel_org WHERE set_date = ? AND upper(org_id) = upper(?)",
-                              (chosen, org_id)).fetchone()
-        if not org:
-            return {"set_date": chosen, "earliest_used": earliest_used, "found": False, "personnel": []}
+        out = {"set_date": chosen, "earliest_used": earliest_used, "found": False, "personnel": [], "match": None,
+               "candidates": []}
+        org, match = None, None
+        if org_id:
+            org = self.db.execute("SELECT * FROM empanel_org WHERE set_date = ? AND upper(org_id) = upper(?)",
+                                  (chosen, str(org_id))).fetchone()
+            match = "identifier" if org else None
+        variants = org_name_variants(org_name) if org_name else []
+        if org is None and variants and self._has_table("empanel_org_name"):
+            ids = set()
+            for v in variants:
+                ids |= {r["org_id"] for r in self.db.execute(
+                    "SELECT DISTINCT org_id FROM empanel_org_name WHERE set_date = ? AND name_norm = ?", (chosen, v))}
+            if len(ids) == 1:
+                org = self.db.execute("SELECT * FROM empanel_org WHERE set_date = ? AND org_id = ?",
+                                      (chosen, ids.pop())).fetchone()
+                match = "name"
+            elif len(ids) > 1:
+                out["candidates"] = sorted(r["org_name"] for r in self.db.execute(
+                    f"SELECT org_name FROM empanel_org WHERE set_date = ? AND org_id IN ({','.join('?' * len(ids))})",
+                    (chosen, *sorted(ids))))
+                out["match"] = "ambiguous"
+                return out
+        if org is None:
+            if variants and self._has_table("empanel_org_name"):
+                import difflib
+                names = {r["name_norm"]: r["org_id"] for r in self.db.execute(
+                    "SELECT name_norm, org_id FROM empanel_org_name WHERE set_date = ?", (chosen,))}
+                close = difflib.get_close_matches(variants[0], list(names), n=3, cutoff=0.75)
+                ids = list(dict.fromkeys(names[c] for c in close))
+                out["candidates"] = [r["org_name"] for i in ids for r in self.db.execute(
+                    "SELECT org_name FROM empanel_org WHERE set_date = ? AND org_id = ?", (chosen, i))]
+            return out
+        org = dict(org)
         people = [dict(r) for r in self.db.execute(
-            "SELECT name, name_norm, designation FROM empanel_person WHERE set_date = ? AND upper(org_id) = upper(?)",
-            (chosen, org_id))]
-        return {"set_date": chosen, "earliest_used": earliest_used, "found": True, "org_name": org["org_name"],
-                "valid_from": org["valid_from"], "valid_to": org["valid_to"], "personnel": people}
+            "SELECT * FROM empanel_person WHERE set_date = ? AND org_id = ?", (chosen, org["org_id"]))]
+        declarations = sorted({p.get("declared_on") for p in people if p.get("declared_on")})
+        declaration = None
+        if len(declarations) > 1:
+            before = [x for x in declarations if x <= d]
+            declaration = before[-1] if before else declarations[0]
+            people = [p for p in people if p.get("declared_on") in (declaration, None)]
+        elif declarations:
+            declaration = declarations[0]
+        listed = org.get("personnel_listed")
+        out.update({"found": True, "match": match, "org_id": org["org_id"], "org_name": org.get("org_name"),
+                    "valid_from": org.get("valid_from"), "valid_to": org.get("valid_to"),
+                    "information_as_on": org.get("information_as_on"), "declaration": declaration,
+                    "declaration_after_date": bool(declaration and declaration > d),
+                    "personnel_listed": bool(people) if listed is None else bool(listed),
+                    "manpower_statement": org.get("manpower_statement"), "personnel": people})
+        return out
 
     def find_person(self, emp: dict, name: str) -> list[dict]:
-        n = norm_name(name)
-        return [p for p in emp.get("personnel", []) if p.get("name_norm") == n]
+        n = norm_person(name)
+        return [p for p in emp.get("personnel", []) if norm_person(p.get("name")) == n]

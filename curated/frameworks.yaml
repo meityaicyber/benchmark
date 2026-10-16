@@ -3,7 +3,8 @@
 # (WSTG-XXXX-NN; legacy OTG-XXX-NNN), OWASP ASVS 4.0.3 (V1.2.3) and 5.0.0 (v5.0.0-1.2.3), OWASP MASTG 2
 # (MASTG-TEST-0001), MASVS 2.1 (MASVS-STORAGE-1; legacy MSTG-AUTH-1), CSA CCM v4 (17 domains, e.g. A&A-01),
 # OSSTMM 3 (ISECOM), OWASP DevSecOps Maturity Model, NIST SP 800-115, PTES, and the Cyber Security Audit
-# Baseline Requirements (NSCS-46-16 Rev 1.0, October 2020, published on the CERT-In website).
+# Baseline Requirements (NSCS-46-16 Rev 1.0, October 2020, published on the CERT-In website; the full document,
+# with its 68 markers, supplied by CERT-In in October 2026).
 # Names are matched case-insensitively after removing punctuation; any alias counts as a citation.
 # test_case_patterns are regular expressions identifying test cases or controls of the framework,
 # used by Q1 traceability of standards to findings.
@@ -13,8 +14,24 @@ comprehensive:
     aliases: ["iso/iec", "iso 27001", "iso/iec 27001", "iso 27002", "iso/iec 27002", "iso 27017", "iso 27018", "iso/iec 27005", "iso 27005", "iso/iec 15408", "iso 15408", "iso/iec 62443", "iec 62443", "iso 22301"]
     test_case_patterns: ['\bA\.\d{1,2}(\.\d{1,2}){1,2}\b', '\bISO(/IEC)?\s*2700[12]\b']
   Cyber Security Audit Baseline Requirements:
-    aliases: ["cyber security audit baseline requirements", "cert-in baseline requirements", "audit baseline requirements", "csabr", "csa-br", "nscs-46-16"]
-    test_case_patterns: ['(?-i:\b(csm|pro|det|res|rec|imp)\.\d{1,2}\b)']
+    aliases: ["cyber security audit baseline requirements", "cyber security audit - baseline requirements", "cert-in baseline requirements", "audit baseline requirements", "csabr", "csa-br", "nscs-46-16", "nscs 46-16"]
+    # The 68 marker identifiers of NSCS-46-16 Rev 1.0 (document supplied by CERT-In, October 2026): csm.1 to csm.19,
+    # pro.1 to pro.21, det.1 to det.9, res.1 to res.11, rec.1 to rec.3, imp.1 to imp.5. An identifier outside
+    # these ranges is not a marker.
+    test_case_patterns: ['(?-i:\b(csm\.(1[0-9]|[1-9])|pro\.(2[01]|1[0-9]|[1-9])|det\.[1-9]|res\.(1[01]|[1-9])|rec\.[1-3]|imp\.[1-5])\b)']
+    markers:
+      csm: {category: Management, count: 19}
+      pro: {category: Protection, count: 21}
+      det: {category: Detection, count: 9}
+      res: {category: Response, count: 11}
+      rec: {category: Recovery, count: 3}
+      imp: {category: "Lesson Learnt & Improvements", count: 5}
+    # Section 6, Tables 2 to 4: every marker is mandatory for high risk information infrastructure; these are
+    # recommended rather than mandatory for medium and low risk infrastructure
+    recommended_by_profile:
+      high: []
+      medium: [pro.12, pro.13, pro.20, det.3, res.1, res.8]
+      low: [csm.11, csm.12, csm.14, csm.15, pro.12, pro.13, pro.16, pro.20, pro.21, det.3, det.4, det.7, det.9, res.1, res.8, res.9, imp.4, imp.5]
   CSA Cloud Controls Matrix:
     aliases: ["csa ccm", "cloud controls matrix", "csa cloud controls matrix", "ccm v4", "ccm"]
     test_case_patterns: ['\b(AIS|BCR|CCC|CEK|DCS|DSP|GRC|HRS|IAM|IPY|IVS|LOG|SEF|STA|TVM|UEM|A&A)-\d{2}\b']
@@ -43,8 +60,13 @@ supporting:
     aliases: ["ptes", "penetration testing execution standard"]
     test_case_patterns: []
   CERT-In Directions 28.04.2022:
-    aliases: ["cert-in directions", "directions dated 28 april 2022", "cert-in directions 28.04.2022", "70b(6) directions"]
+    aliases: ["cert-in directions", "directions dated 28 april 2022", "cert-in directions 28.04.2022", "70b(6) directions", "methods of verification to compliance with cert-in directions"]
     test_case_patterns: []
+  # CERT-In, Version 1.1, January 2024 (supplied by CERT-In, October 2026); Guidelines §8(vii), key recommendation iv.
+  # A CERT-In guideline to be checked in application audits; not one of the comprehensive frameworks of §8(ii).
+  CERT-In Guidelines for Secure Application Design, Development, Implementation & Operations:
+    aliases: ["guidelines for secure application design", "secure application design, development, implementation & operations", "secure application design, development, implementation and operations", "cert-in application security guidelines", "cert-in asg"]
+    test_case_patterns: ['(?:secure application design|application security guidelines|\bASG\b)[^\n]{0,40}?\b[3-6]\.\d{1,2}\b']
 
 # Not standards under §8(ii)
 limited:

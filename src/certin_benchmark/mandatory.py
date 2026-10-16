@@ -16,7 +16,7 @@ from .context import Context
 from .results import FAIL, INDETERMINATE, NA, PASS, CheckResult
 import re
 
-from .util import as_float, cwe_number, norm_name, norm_text, parse_date
+from .util import as_float, cwe_number, norm_person, norm_text, parse_date
 
 
 @dataclass
@@ -343,36 +343,61 @@ def mc09(ctx: Context) -> Outcome:
 
 # ---- MC-10 declared personnel ----------------------------------------------------------------------------
 def mc10(ctx: Context) -> Outcome:
+    """Each signatory and audit team member is declared to CERT-In (§9.5(iii), §16.1(vi): "signed only by the
+    manpower declared to CERT-In, as listed in the organization's snapshot information").
+
+    The organisation is found by identifier or, as CERT-In publishes none, by name; a name that does not
+    correspond exactly, an organisation whose snapshot lists no manpower, and a person not found by exact
+    name each return Indeterminate (Section 5), never Fail.
+    """
     rd = ctx.refdata
     if rd is None or not rd.available("empanelment"):
         return Outcome(INDETERMINATE, ["CERT-In empanelment records not available in the Reference Data Package"])
     org_id = ctx.report.get("report_meta.auditing_organization.certin_empanelment_id")
-    if not ctx.present(org_id):
-        return Outcome(INDETERMINATE, ["auditing organisation's CERT-In empanelment identifier not stated"])
-    on = parse_date(ctx.report.get("report_meta.report_release_date")) or ctx.report.reference_date()
-    if on is None:
-        return Outcome(INDETERMINATE, ["report release date not available to select the set of records in force"])
-    emp = rd.empanelment(str(org_id), on)
-    ref = {"empanelment_set": emp.get("set_date") if emp else None}
+    org_name = ctx.report.get("report_meta.auditing_organization.name")
+    if not ctx.present(org_id) and not ctx.present(org_name):
+        return Outcome(INDETERMINATE, ["auditing organisation not identified (neither name nor empanelment identifier stated)"])
+    emp = ctx.empanelment_record()
+    if emp is None:
+        dated = parse_date(ctx.report.get("report_meta.report_release_date")) or ctx.report.reference_date()
+        return Outcome(INDETERMINATE, ["report release date not available to select the set of records in force"
+                                       if dated is None else "no set of CERT-In empanelment records is held"])
+    ref = {"empanelment_set": emp.get("set_date"), "matched_by": emp.get("match"),
+           "organisation": emp.get("org_name"), "declaration": emp.get("declaration")}
     notes = []
-    if emp and emp.get("earliest_used"):
+    if emp.get("earliest_used"):
         notes.append(f"release date precedes the earliest set held; set of {emp['set_date']} applied")
-    if not emp or not emp.get("found"):
-        return Outcome(INDETERMINATE, [f"organisation '{org_id}' not found in the empanelment records "
-                                       f"(set {emp.get('set_date') if emp else 'none'})"], notes, ref)
-    people = {norm_name(m.get("name")): m for m in ctx.report.team if m.get("name")}
+    label = org_name if ctx.present(org_name) else org_id
+    if not emp.get("found"):
+        if emp.get("match") == "ambiguous":
+            return Outcome(INDETERMINATE, [f"'{label}' corresponds to more than one organisation in the empanelment "
+                                           f"records: {'; '.join(emp['candidates'])}"], notes, ref)
+        close = f"; closest names in the records: {'; '.join(emp['candidates'])}" if emp.get("candidates") else ""
+        return Outcome(INDETERMINATE, [f"organisation '{label}' not found in the empanelment records "
+                                       f"(set {emp.get('set_date')}){close}"],
+                       notes + ["referred for human review; the organisation may be listed under another name"], ref)
+    if emp.get("declaration_after_date"):
+        notes.append(f"the organisation's declaration of manpower in the records is dated {emp['declaration']}, "
+                     f"after the report release date; it is applied as the earliest held")
+    if not emp.get("personnel_listed"):
+        stmt = f" ({emp['manpower_statement']})" if emp.get("manpower_statement") else ""
+        return Outcome(INDETERMINATE, [f"the organisation's snapshot in the empanelment records lists no technical "
+                                       f"manpower{stmt}; declaration of the signatories cannot be verified"], notes, ref)
+    people = {norm_person(m.get("name")): m for m in ctx.report.team if m.get("name")}
     for path in ("document_control.prepared_by", "document_control.reviewed_by", "document_control.approved_by"):
         sig = ctx.report.get(path) or {}
         if sig.get("name"):
-            people.setdefault(norm_name(sig["name"]), {"name": sig["name"]})
+            people.setdefault(norm_person(sig["name"]), {"name": sig["name"]})
     unmatched = []
     for n, m in people.items():
         hits = rd.find_person(emp, m["name"])
         if not hits:
             unmatched.append(m["name"])
-        elif m.get("designation") and not any(norm_text(h.get("designation")) == norm_text(m.get("designation")) for h in hits):
+        elif m.get("designation") and any(h.get("designation") for h in hits) and \
+                not any(norm_text(h.get("designation")) == norm_text(m.get("designation")) for h in hits):
             notes.append(f"'{m['name']}' declared with designation '{hits[0].get('designation')}', "
                          f"report states '{m.get('designation')}'")
+    ref["persons_checked"] = len(people)
     if unmatched:
         return Outcome(INDETERMINATE, [f"'{n}' does not correspond exactly to the empanelment records" for n in unmatched],
                        notes + ["referred for human review; Fail only on confirmation that the person is not declared"], ref)
@@ -598,7 +623,7 @@ CHECKS: list[MandatoryCheck] = [
                    "Rule", "Reports with a certificate or with report_status Final", mc09_applies, mc09),
     MandatoryCheck("MC-10", "Each signatory and audit team member is declared to CERT-In in the empanelment records",
                    ["§9.5(iii)", "§10.2(vi)", "§12.3(iii)"],
-                   ["auditing_team[].name", "auditing_team[].designation",
+                   ["auditing_team[].name", "auditing_team[].designation", "report_meta.auditing_organization.name",
                     "report_meta.auditing_organization.certin_empanelment_id", "report_meta.report_release_date",
                     "document_control.prepared_by", "document_control.reviewed_by", "document_control.approved_by"],
                    "Rule, reference data", "All reports", _all, mc10),
@@ -662,7 +687,12 @@ def run_mandatory(ctx: Context) -> list[CheckResult]:
             res.referred = True
             out.append(res)
             continue
-        o = chk.evaluate(ctx)
+        try:
+            o = chk.evaluate(ctx)
+        except Exception as exc:  # a defect in one check refers the report rather than stopping the evaluation
+            o = Outcome(INDETERMINATE, [f"check could not be evaluated ({type(exc).__name__}: {exc}); refer to the "
+                                        "maintainers"])
+            ctx.warnings.append(f"{chk.id} raised {type(exc).__name__}: {exc}")
         res.result, res.deficiencies, res.notes, res.reference_values = o.result, o.deficiencies, o.notes, o.reference_values
         res.referred = o.result == INDETERMINATE
         if chk.id in referral_mode and o.result != PASS:

@@ -174,15 +174,40 @@ def make_staging(root: Path, epss_days: list[str] | None = None, seed: int = 7) 
     (adv / "advisories.json").write_text(json.dumps({"as_of": "2026-07-01", "advisories": [
         {"id": "CIVN-2021-0000", "issued_on": "2021-10-06", "title": "Synthetic note: vulnerabilities in Apache HTTP Server",
          "kind": "advisory", "cves": ["CVE-2021-41773", "CVE-2021-42013"], "products": ["Apache HTTP Server"]}]}))
-    # Empanelment records
+    # Empanelment records, in the form written by empanelment_pdf.py from CERT-In's list (synthetic organisations
+    # and people). Example Assurance keeps the identifier the sample report cites; the other two test a snapshot
+    # listing no manpower and an organisation with two declarations of different dates.
     emp = root / "empanelment"
     emp.mkdir()
-    (emp / "set_2026-01-15.json").write_text(json.dumps({"set_date": "2026-01-15", "organisations": [{
-        "org_id": "CERTIN-EMP-0999", "name": "Example Assurance Pvt Ltd", "valid_from": "2024-04-01", "valid_to": "2027-03-31",
-        "personnel": [{"name": "Asha Verma", "designation": "Lead Consultant"},
-                      {"name": "Karan Iyer", "designation": "Security Consultant"},
-                      {"name": "Rohit Mehra", "designation": "Senior Manager"},
-                      {"name": "Sunil Kapoor", "designation": "Managing Director"}]}]}))
+    (emp / "set_2026-01-15.json").write_text(json.dumps({
+        "set_date": "2026-01-15",
+        "source": {"publisher": "CERT-In", "file": "synthetic", "sha256": "0" * 64, "pages": 3, "personnel": 7},
+        "organisations": [
+            {"org_id": "CERTIN-EMP-0999", "name": "M/s Example Assurance Pvt Ltd",
+             "names": ["example assurance"], "list_no": 1, "information_as_on": "2025-11-14",
+             "valid_from": None, "valid_to": None,
+             "personnel": [
+                 {"name": "Asha Verma", "designation": None, "with_organisation": "6+ Years", "experience": "8+ Years",
+                  "experience_years": 8.0, "qualifications": "OSCP, CEH", "declared_on": "2025-11-14"},
+                 {"name": "Karan Iyer", "designation": None, "with_organisation": "3 Years", "experience": "4 Years",
+                  "experience_years": 4.0, "qualifications": "eWPT, OSWE", "declared_on": "2025-11-14"},
+                 {"name": "Rohit Mehra", "designation": None, "with_organisation": "10 Years", "experience": "15 Years",
+                  "experience_years": 15.0, "qualifications": "CISSP, CISA", "declared_on": "2025-11-14"},
+                 {"name": "Sunil Kapoor", "designation": None, "with_organisation": "12 Years", "experience": "20 Years",
+                  "experience_years": 20.0, "qualifications": "CISA", "declared_on": "2025-11-14"}]},
+            {"org_id": "certin-emp:confidential-manpower", "name": "M/s Confidential Manpower Pvt. Ltd.",
+             "names": ["confidential manpower"], "list_no": 2, "information_as_on": "2025-10-01",
+             "manpower_statement": "This is confidential information.", "personnel": []},
+            {"org_id": "certin-emp:two-declarations", "name": "M/s Two Declarations LLP",
+             "names": ["two declarations"], "list_no": 3, "information_as_on": "2025-12-01",
+             "declarations": ["2022-06-01", "2025-12-01"],
+             "personnel": [
+                 {"name": "Meera Nair", "qualifications": "CEH", "experience": "3 Years", "experience_years": 3.0,
+                  "declared_on": "2022-06-01"},
+                 {"name": "Meera Nair", "qualifications": "CEH, OSCP", "experience": "6 Years", "experience_years": 6.0,
+                  "declared_on": "2025-12-01"},
+                 {"name": "Vikram Rao 2", "qualifications": "CISA", "experience": "9 Years", "experience_years": 9.0,
+                  "declared_on": "2025-12-01"}]}]}))
     return root
 
 

@@ -41,8 +41,14 @@ class Q1(unittest.TestCase):
 class Q2(unittest.TestCase):
     def test_depth_scores_0_50_100(self):
         c = criterion(evaluate(compliant_sample()), "Q2")
-        # Six directions: DIR-i, DIR-iii and DIR-iv assessed with evidence (100 each), three not assessed
-        self.assertAlmostEqual(c.components["D"].score, 300 / 6, places=3)
+        # Methods of verification: rows 1 (DIR-i) and 5 (DIR-iv) assessed with evidence (100 each); row 2
+        # (incident reporting) applies to every entity and is not assessed (0); rows 3 and 4 apply only to
+        # data centre, cloud and VPN providers and to virtual asset providers, not established for a Government
+        # auditee (not scored); DIR-iii has no row in the document (not scored)
+        self.assertAlmostEqual(c.components["D"].score, 200 / 3, places=3)
+        per = c.reference_values["directions_requirements"]
+        self.assertEqual((per["MoV-1"], per["MoV-2"], per["MoV-5"]), (100.0, 0.0, 100.0))
+        self.assertTrue(str(per["MoV-3"]).startswith("not scored"))
         self.assertIsNone(c.components["R"].score)        # Government: no mandatory sector regulation
         self.assertEqual(c.components["A"].score, 100.0)  # CIVN-2021-0000 (synthetic note) cited
 

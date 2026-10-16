@@ -63,6 +63,8 @@ def cmd_evaluate(a: argparse.Namespace) -> int:
             "text": text.recorded if text else {}, "vision": vision.recorded if vision else {},
             "text_model_version": text.model_version if text else None,
             "vision_model_version": vision.model_version if vision else None}, indent=1))
+    if refdata is not None:
+        refdata.close()
     return rc
 
 
@@ -88,8 +90,18 @@ def cmd_rdp(a: argparse.Namespace) -> int:
     from .refdata import package as pkg
     if a.rdp_cmd == "build":
         from .refdata.build import PackageBuilder
-        out = PackageBuilder(a.staging, a.curated or DEFAULT_CURATED_DIR, a.out_root, a.previous, _date(a.date)).build()
+        out = PackageBuilder(a.staging, a.curated or DEFAULT_CURATED_DIR, a.out_root, a.previous, _date(a.date),
+                             accept_changes=tuple(a.accept_change or ())).build()
         print(out)
+    elif a.rdp_cmd == "convert-empanelment":
+        from .refdata import empanelment_pdf
+        out = empanelment_pdf.write_set(a.pdf, Path(a.staging) / "empanelment", a.set_date,
+                                        log=lambda m: print(m, file=sys.stderr))
+        data = json.loads(out.read_text())
+        print(f"{out}: {len(data['organisations'])} organisations, {data['source']['personnel']} personnel; "
+              f"{len(data['warnings'])} warnings")
+        for w in data["warnings"]:
+            print(f"  warning: {w}", file=sys.stderr)
     elif a.rdp_cmd == "keygen":
         pkg.generate_keypair(a.private, a.public)
     elif a.rdp_cmd == "sign":
@@ -191,6 +203,14 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--out-root", required=True)
     b.add_argument("--previous")
     b.add_argument("--date")
+    b.add_argument("--accept-change", action="append", metavar="SOURCE",
+                   help="accept a record count outside the expected range of the previous package for this source "
+                        "(recorded in the manifest), e.g. empanelment for the first real list after test records")
+    ce = rs.add_parser("convert-empanelment", help="preparation host only: convert CERT-In's list of empanelled "
+                                                    "auditing organisations (PDF) into an empanelment set")
+    ce.add_argument("pdf")
+    ce.add_argument("--staging", required=True)
+    ce.add_argument("--set-date", help="date on which the list was received (default: the document's date)")
     k = rs.add_parser("keygen")
     k.add_argument("--private", required=True)
     k.add_argument("--public", required=True)

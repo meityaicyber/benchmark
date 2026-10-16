@@ -1,25 +1,40 @@
 # Section 9: engagement module definitions. Each module names the frameworks whose application
 # is traced under Q1 and the additional checks assessed under the module checks of Q8 (MD).
 # Check implementations live in certin_benchmark/modules.py; keywords used by those checks are here.
+# A check listed under several selected modules is assessed once.
 
 baseline_framework: Cyber Security Audit Baseline Requirements   # expected under every module
+
+# Checks added to the table of Section 9 from the CERT-In documents supplied in October 2026, with their
+# basis. They are applied pending CERT-In's confirmation, and each row of the record names its basis. To apply
+# the table of Section 9 alone, remove them from the modules below (Section 9: module definitions are
+# maintained as configuration).
+pending_confirmation:
+  application_security_guidelines: "CERT-In key recommendations (September 2024) iv (the guidelines document is the one Guidelines §8(vii) names)"
+  certificate_artefacts: "CERT-In key recommendations (September 2024) vi; Guidelines §9.5(i), §16.1(v)"
+  certificate_environment: "CERT-In key recommendations (September 2024) x (Guidelines §16.3(v) asks the same of the final report, which MC-12 checks)"
+  certificate_after_followup: "CERT-In key recommendations (September 2024) x (Guidelines §16.3(v) asks the same of the final report)"
+  compliance_baseline_markers: "Cyber Security Audit Baseline Requirements (NSCS-46-16), Tables 2 to 4; Guidelines §8(iii)"
 
 modules:
   web:
     name: Web application
     frameworks: [OWASP WSTG, OWASP ASVS]
-    checks: [web_version_hash, web_environment, web_third_party_certificate]
-    clauses: ["§8(ii)", "§13.1.5", "§15.2.3(ii)", "§16.1(v)"]
+    checks: [web_version_hash, web_environment, web_third_party_certificate, application_security_guidelines,
+             certificate_artefacts, certificate_environment, certificate_after_followup]
+    clauses: ["§8(ii)", "§9.5(i)", "§13.1.5", "§15.2.3(ii)", "§16.1(v)"]
   mobile:
     name: Mobile application
     frameworks: [OWASP MSTG]
-    checks: [mobile_version_build_hash, mobile_platform]
-    clauses: ["§8(ii)", "§13.2.3(ii)(c)"]
+    checks: [mobile_version_build_hash, mobile_platform, application_security_guidelines, certificate_artefacts,
+             certificate_environment, certificate_after_followup]
+    clauses: ["§8(ii)", "§9.5(i)", "§13.2.3(ii)(c)", "§16.1(v)"]
   api:
     name: Application programming interface
     frameworks: [OWASP WSTG, OWASP ASVS]
-    checks: [api_role_coverage]
-    clauses: ["§8(ii)", "§13.1.1(a)"]
+    checks: [api_role_coverage, application_security_guidelines, certificate_artefacts, certificate_environment,
+             certificate_after_followup]
+    clauses: ["§8(ii)", "§9.5(i)", "§13.1.1(a)", "§16.1(v)"]
   network:
     name: Network, infrastructure and device
     frameworks: [OSSTMM3, ISO/IEC]
@@ -38,13 +53,13 @@ modules:
   source_code:
     name: Source code review
     frameworks: [OWASP ASVS]
-    checks: [source_static_tool, source_manual_review]
+    checks: [source_static_tool, source_manual_review, application_security_guidelines]
     clauses: ["§8(i)", "§13.1.3(iii)"]
   compliance:
     name: Compliance, process and policy
     frameworks: [ISO/IEC]
-    checks: [compliance_policy_review, compliance_assessments_populated]
-    clauses: ["§8(vi)", "§18(ii)"]
+    checks: [compliance_policy_review, compliance_assessments_populated, compliance_baseline_markers]
+    clauses: ["§8(iii)", "§8(vi)", "§18(ii)"]
   critical_database:
     name: Critical database
     frameworks: [ISO/IEC, Cyber Security Audit Baseline Requirements]

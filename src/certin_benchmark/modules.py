@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from .context import Context
-from .util import contains_any, contains_phrase, norm_text
+import re
+
+from .util import contains_any, contains_phrase, norm_text, parse_date
 
 
 def select_modules(ctx: Context) -> list[str]:
@@ -221,21 +223,183 @@ def forensics_threat_actor_removal(ctx):
              _addressed(ctx, _kw(ctx, "threat_actor_removal")))]
 
 
+# ---- checks drawn from the CERT-In documents supplied in October 2026 ---------------------------------
+ASG = "CERT-In Guidelines for Secure Application Design, Development, Implementation & Operations"
+ASSESSED = {"compliant", "non-compliant", "partially compliant", "not applicable"}
+
+
+def _framework_entries(ctx: Context, framework: str) -> list[dict]:
+    """Compliance entries recorded against a framework, by its name or any of its aliases."""
+    names = [framework, *(ctx.curated.framework_spec(framework).get("aliases") or [])]
+    return [c for c in ctx.report.compliance
+            if norm_text(c.get("framework")) == norm_text(framework)
+            or any(contains_phrase(c.get("framework_name"), n) or contains_phrase(c.get("framework"), n) for n in names)]
+
+
+def _asg_entries(ctx: Context) -> list[dict]:
+    """Entries against CERT-In's Guidelines for Secure Application Design, Development, Implementation & Operations:
+    named by their title or an alias, or as application security guidelines of CERT-In (other bodies issue
+    guidelines of that name)."""
+    out = _framework_entries(ctx, ASG)
+    for c in ctx.report.compliance:
+        name = f"{c.get('framework_name') or ''} {c.get('framework') or ''}"
+        if c not in out and contains_phrase(name, "application security guidelines") and \
+                re.search(r"cert\s*-?\s*in", name, re.I):
+            out.append(c)
+    return out
+
+
+def _application_audited(ctx: Context) -> bool:
+    """An application is audited: an application audit type is declared, or an application asset is tested."""
+    app = {norm_text(t) for t in ctx.curated.engagements.get("application_security_types", [])}
+    if any(norm_text(t) in app for t in ctx.report.audit_types):
+        return True
+    app_types = set(ctx.curated.engagements.get("in_scope_application_asset_types", []))
+    return any(a.get("asset_type") in app_types and a.get("tested") is True for a in ctx.report.assets)
+
+
+def _status(e: dict) -> str:
+    return str(e.get("status") or "").strip().lower()
+
+
+def application_security_guidelines(ctx):
+    """Key recommendation iv (CERT-In advisory, September 2024): in application audits, compliance with the CERT-In
+    Guidelines for Secure Application Design, Development, Implementation & Operations is checked, with findings
+    and evidence in the report. Applies where an application is audited."""
+    if not _application_audited(ctx):
+        return []
+    entries = _asg_entries(ctx)
+    practices = [e for e in entries if _status(e) in ASSESSED - {"not applicable"}]
+    without = [e for e in practices if not e.get("evidence_refs")]
+    unexplained = [e for e in entries if _status(e) == "not applicable" and not ctx.present(e.get("remarks"))]
+    desc = "compliance with the CERT-In Guidelines for Secure Application Design, Development, Implementation & Operations assessed with evidence"
+    if not practices:
+        return [(desc + " (no practice assessed)", False)]
+    if without:
+        return [(desc + f" ({len(without)} practice(s) with a status but no evidence)", False)]
+    if unexplained:
+        return [(desc + f" ({len(unexplained)} practice(s) recorded Not applicable without a reason)", False)]
+    return [(desc + f" ({len(practices)} practice(s))", True)]
+
+
+def certificate_artefacts(ctx):
+    """§9.5(i), §16.1(v), key recommendation vi: hash values, versions and timestamps of the audited application
+    featured in the audit certificate. Read from the certified application assets and the certificate's date of
+    issue; applies where an application is audited, to the application assets tested."""
+    if ctx.report.get("audit_certificate.present") is not True or not _application_audited(ctx):
+        return []
+    app_types = set(ctx.curated.engagements.get("in_scope_application_asset_types", []))
+    certified = {str(n) for n in (ctx.report.get("audit_certificate.certified_asset_sr_nos") or [])}
+    apps = [a for a in ctx.report.assets if a.get("asset_type") in app_types and a.get("tested") is True]
+    if not apps:
+        return []
+    named = [a for a in apps if str(a.get("sr_no")) in certified]
+    ok = bool(named) and all(ctx.present(a.get("version")) and ctx.present(a.get("hash")) for a in named) \
+        and ctx.report.get("audit_certificate.issue_date") is not None
+    missing = []
+    if not named:
+        missing.append("no certified application identified")
+    else:
+        missing += [f"{_label(a)} without version or hash" for a in named
+                    if not (ctx.present(a.get("version")) and ctx.present(a.get("hash")))]
+    if ctx.report.get("audit_certificate.issue_date") is None:
+        missing.append("no date of issue")
+    return [("audit certificate identifies the certified applications with version, hash and date"
+             + (f" ({'; '.join(missing)})" if missing else ""), ok)]
+
+
+NON_PRODUCTION = {"staging", "uat", "test", "testing", "development", "dev", "qa", "sandbox", "pre production",
+                  "preproduction", "non production", "nonproduction"}
+NOT_PRODUCTION_STATEMENT = re.compile(
+    r"\bnot\s+(?:been\s+)?(?:conducted|performed|carried\s+out|tested|audited|done)\s+(?:on|in)\s+(?:the\s+)?production"
+    r"|\bproduction\s+(?:environment\s+|servers?\s+|systems?\s+)?(?:was|were|has|have|had)\s+not\s+(?:been\s+)?"
+    r"(?:tested|audited|assessed|in\s+scope)|\bnot\s+(?:on|in)\s+(?:the\s+)?production\b"
+    r"|\bexcluding\s+(?:the\s+)?production|\bonly\s+(?:on|in)\s+(?:the\s+)?(?:staging|uat|test|non[- ]?production)", re.I)
+NON_PRODUCTION_TERMS = re.compile(r"\b(?:non[- ]?production|pre[- ]?production|staging|uat|test(?:ing)?\s+environment)\b",
+                                  re.I)
+
+
+def certificate_environment(ctx):
+    """Key recommendation x: where the audit of an application was limited to a non-production platform, the
+    certificate states explicitly that it was not conducted on the production environment (§16.3(v) requires
+    the same of the final report, which MC-12 checks)."""
+    if ctx.report.get("audit_certificate.present") is not True or not _application_audited(ctx):
+        return []
+    tested = [a for a in ctx.report.assets if a.get("tested") is True]
+    prod_flag = ctx.report.get("engagement_scope.production_tested")
+    production = prod_flag if isinstance(prod_flag, bool) else \
+        any(str(a.get("environment") or "").lower() == "production" for a in tested)
+    if production:
+        return []
+    env = re.sub(r"[-_]+", " ", str(ctx.report.get("audit_certificate.certified_environment") or "")).strip().lower()
+    statement = str(ctx.report.get("audit_certificate.statement") or "")
+    # a statement naming only non-production platforms says so too; one that also names production does not
+    rest = re.sub(r"\b(?:non|pre)[- ]?production\b", " ", statement, flags=re.I)
+    only_non_production = bool(NON_PRODUCTION_TERMS.search(statement)) and not re.search(r"\bproduction\b", rest, re.I)
+    ok = env in NON_PRODUCTION or bool(NOT_PRODUCTION_STATEMENT.search(statement)) or only_non_production
+    return [("certificate states that the audit was not conducted on the production environment", ok)]
+
+
+def certificate_after_followup(ctx):
+    """Key recommendation x: the certificate is issued after closure of vulnerabilities and completion of the
+    follow-up audit. Evaluated where both the certificate date and the end of revalidation are recorded."""
+    issued = parse_date(ctx.report.get("audit_certificate.issue_date"))
+    reval = parse_date(ctx.report.get("audit_timeline.revalidation_end_date"))
+    if ctx.report.get("audit_certificate.present") is not True or issued is None or reval is None or \
+            not _application_audited(ctx):
+        return []
+    return [(f"certificate issued ({issued}) on or after completion of the follow-up audit ({reval})", issued >= reval)]
+
+
+def compliance_baseline_markers(ctx):
+    """In compliance audits, the Cyber Security Audit Baseline Requirements, expected under every module
+    (Section 9) and the basis of the audit programme (§8(iii)), are assessed: every marker mandatory for every
+    risk profile (Tables 2 to 4 of NSCS-46-16) has an entry with a compliance status. One row: the report does
+    not state the auditee's risk profile, so markers only recommended for low risk infrastructure are not
+    required."""
+    fw = "Cyber Security Audit Baseline Requirements"
+    spec = ctx.curated.framework_spec(fw)
+    markers = spec.get("markers") or {}
+    low_recommended = set(spec.get("recommended_by_profile", {}).get("low") or [])
+    assessed = set()
+    for e in _framework_entries(ctx, fw):
+        if _status(e) in ASSESSED:
+            for m in re.findall(r"\b(csm|pro|det|res|rec|imp)\s*\.\s*(\d{1,2})\b",
+                                f"{e.get('requirement_id') or ''} {e.get('requirement_text') or ''}", re.I):
+                assessed.add(f"{m[0].lower()}.{int(m[1])}")
+    required = [f"{prefix}.{i}" for prefix, m in markers.items() for i in range(1, int(m["count"]) + 1)
+                if f"{prefix}.{i}" not in low_recommended]
+    missing = [x for x in required if x not in assessed]
+    shown = ", ".join(missing[:12]) + (", ..." if len(missing) > 12 else "")
+    return [(f"Baseline Requirements: the {len(required)} markers mandatory for every risk profile assessed"
+             + (f" ({len(missing)} not assessed: {shown})" if missing else ""), not missing)]
+
+
 CHECKS = {name: fn for name, fn in globals().items() if callable(fn) and name.split("_")[0] in
-          ("web", "mobile", "api", "network", "cloud", "cicd", "source", "compliance", "database", "forensics")
+          ("web", "mobile", "api", "network", "cloud", "cicd", "source", "compliance", "database", "forensics",
+           "application", "certificate")
           and name not in ("select_modules",)}
 
 
 def run_module_checks(ctx: Context) -> list[dict]:
-    """Return one row per module check result: module, check, description, met."""
+    """Return one row per module check result: module, check, description, met, and basis (the table of
+    Section 9, or the CERT-In document from which a check pending CERT-In's confirmation was added)."""
     rows = []
     mods = ctx.curated.modules.get("modules", {})
+    pending = ctx.curated.modules.get("pending_confirmation") or {}
+    done = set()
     for m in ctx.modules:
         for check in mods.get(m, {}).get("checks", []):
+            if check in done:          # a check shared by several selected modules is assessed once
+                continue
+            done.add(check)
             fn = CHECKS.get(check)
+            basis = f"pending CERT-In confirmation: {pending[check]}" if check in pending else "Suite Section 9"
             if fn is None:
-                rows.append({"module": m, "check": check, "description": "check not implemented", "met": None})
+                rows.append({"module": m, "check": check, "description": "check not implemented", "met": None,
+                             "basis": basis})
                 continue
             for desc, met in fn(ctx):
-                rows.append({"module": m, "check": check, "description": desc, "met": None if met is None else bool(met)})
+                rows.append({"module": m, "check": check, "description": desc, "met": None if met is None else bool(met),
+                             "basis": basis})
     return rows

@@ -12,7 +12,7 @@ from .evaluators.sampling import SampledEvaluator
 from .images import ImageResolver, ResolvedImage
 from .refdata.store import ReferenceData
 from .report import Report
-from .util import contains_phrase, is_present, is_substantive
+from .util import contains_phrase, is_present, is_substantive, parse_date
 
 
 @dataclass
@@ -41,6 +41,32 @@ class Context:
     def note_confidence(self, patterns: list[str]) -> None:
         for p, c in self.report.confidence_entries(patterns):
             self.used_confidence[p] = c
+
+    def empanelment_record(self) -> dict | None:
+        """The auditing organisation's CERT-In empanelment records in force on the report release date
+        (Suite Section 11.3), looked up once per evaluation; None where no records are available."""
+        if "_empanelment" in self.__dict__:
+            return self.__dict__["_empanelment"]
+        rec = None
+        rd = self.refdata
+        if rd is not None and rd.available("empanelment"):
+            org_id = self.report.get("report_meta.auditing_organization.certin_empanelment_id")
+            org_name = self.report.get("report_meta.auditing_organization.name")
+            on = parse_date(self.report.get("report_meta.report_release_date")) or self.report.reference_date()
+            if on is not None and (self.present(org_id) or self.present(org_name)):
+                rec = rd.empanelment(str(org_id) if self.present(org_id) else None, on,
+                                     str(org_name) if self.present(org_name) else None)
+                if rec is not None:
+                    rec["looked_up_on"] = on.isoformat()
+        self.__dict__["_empanelment"] = rec
+        return rec
+
+    def declared_person(self, name: str | None) -> list[dict]:
+        """Entries for a person in the organisation's empanelment records (exact name after normalisation)."""
+        rec = self.empanelment_record()
+        if not rec or not rec.get("found") or not name:
+            return []
+        return self.refdata.find_person(rec, name)
 
     def resolve_image(self, reference: str | None) -> ResolvedImage:
         """The file behind a proof-of-concept reference: an Objective 1 image tag through the image
