@@ -41,8 +41,14 @@ class Q1(unittest.TestCase):
 class Q2(unittest.TestCase):
     def test_depth_scores_0_50_100(self):
         c = criterion(evaluate(compliant_sample()), "Q2")
-        # Six directions: DIR-i, DIR-iii and DIR-iv assessed with evidence (100 each), three not assessed
-        self.assertAlmostEqual(c.components["D"].score, 300 / 6, places=3)
+        # Methods of verification: rows 1 (DIR-i) and 5 (DIR-iv) assessed with evidence (100 each); row 2
+        # (incident reporting) applies to every entity and is not assessed (0); rows 3 and 4 apply only to
+        # data centre, cloud and VPN providers and to virtual asset providers, not established for a Government
+        # auditee (not scored); DIR-iii has no row in the document (not scored)
+        self.assertAlmostEqual(c.components["D"].score, 200 / 3, places=3)
+        per = c.reference_values["directions_requirements"]
+        self.assertEqual((per["MoV-1"], per["MoV-2"], per["MoV-5"]), (100.0, 0.0, 100.0))
+        self.assertTrue(str(per["MoV-3"]).startswith("not scored"))
         self.assertIsNone(c.components["R"].score)        # Government: no mandatory sector regulation
         self.assertEqual(c.components["A"].score, 100.0)  # CIVN-2021-0000 (synthetic note) cited
 
@@ -189,18 +195,32 @@ class Q7(unittest.TestCase):
         c = criterion(evaluate(r), "Q7")
         self.assertFalse(c.per_finding["WASA-03"]["checks"][0]["met"])
 
-    def test_nvd_score_reconstructed_before_earliest_package(self):
+    def test_nvd_score_as_at_date_from_feed_and_mirror_history(self):
         from certin_benchmark.util import parse_date
-        # NVD history: 7.5 from 2021-10-12, 9.8 from 2026-02-17; the CISA-ADP entry is not NVD's and is ignored
-        s = refdata().nvd_cvss("CVE-2021-41773", "3.1", parse_date("2026-07-09"))
-        self.assertTrue(s.reconstructed)
-        self.assertEqual(s.score, 9.8)
-        old = refdata().nvd_cvss("CVE-2021-41773", "3.1", parse_date("2025-06-01"))
-        self.assertEqual(old.score, 7.5)
-        s2 = refdata().nvd_cvss("CVE-2021-41773", "3.1", EVAL_DATE)
-        self.assertFalse(s2.reconstructed)
-        self.assertEqual(s2.score, 9.8)
-        self.assertIsNone(refdata().nvd_cvss("CVE-2021-41773", "3.1", parse_date("2021-10-11")))
+        rd = refdata()
+        # NIST's feed (package of 2026-08-20) gives 9.8 since 2026-02-17, which answers any later date
+        s = rd.nvd_cvss("CVE-2021-41773", "3.1", parse_date("2026-07-09"))
+        self.assertEqual((s.score, s.reconstructed, s.as_of), (9.8, False, "2026-02-17"))
+        s2 = rd.nvd_cvss("CVE-2021-41773", "3.1", EVAL_DATE)
+        self.assertEqual((s2.score, s2.reconstructed), (9.8, False))
+        # the mirror's history gives 7.5 from 2022-10-28; the CISA-ADP metric of 2025 is not NVD's and is ignored
+        old = rd.nvd_cvss("CVE-2021-41773", "3.1", parse_date("2025-06-01"))
+        self.assertEqual((old.score, old.reconstructed, old.as_of), (7.5, True, "2022-10-28"))
+        self.assertEqual(rd.nvd_cvss("CVE-2021-41773", "3.1", parse_date("2022-10-28")).score, 7.5)
+        # before the earliest state recorded, NVD's value is not known, and the check is not evaluable
+        self.assertIsNone(rd.nvd_cvss("CVE-2021-41773", "3.1", parse_date("2022-10-27")))
+        self.assertIsNone(rd.nvd_cvss("CVE-2021-41773", "3.1", parse_date("2021-11-01")))
+
+    def test_cvss_check_not_evaluable_before_earliest_nvd_state(self):
+        r = compliant_sample()
+        o = r["detailed_observations"][1]
+        o["observation_date"] = "2021-11-01"
+        for e in o["cve_details"]:
+            e["epss_date"] = "2021-11-01"
+        c = criterion(evaluate(r), "Q7")
+        rec = c.per_finding["WASA-02"]
+        self.assertNotIn("CVE-2021-41773 CVSS accuracy", {x["check"] for x in rec["checks"]})
+        self.assertTrue(any("CVSS accuracy" in n and "not known" in n for n in rec["not_evaluable"]))
 
     def test_epss_file_without_percentile_column(self):
         from certin_benchmark.util import parse_date

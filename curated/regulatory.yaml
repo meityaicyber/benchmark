@@ -1,29 +1,169 @@
 # Regulatory reference lists (Suite MC-06, MC-07, Q2).
-# Checked against the issuers' sites on 12 October 2026; each entry names its source.
-# STATUS: project lists pending CERT-In confirmation. The 282 control points of the MeitY checklist
-# are not published and are to be supplied by CERT-In or MeitY.
+# Checked against the issuers' sites on 12 October 2026; each entry names its source. The requirements of
+# the Directions follow the CERT-In document on methods of verification, supplied by CERT-In in October 2026.
+# STATUS: the 282 control points of the MeitY checklist are not published and are still to be supplied by
+# CERT-In or MeitY; the sector lists are pending CERT-In confirmation.
 
 directions_2022:
   framework: "CERT-In Directions 28.04.2022"
   source: "https://www.cert-in.org.in/PDF/CERT-In_Directions_70B_28.04.2022.pdf (No. 20(3)/2022-CERT-In)"
   explanatory: "https://www.cert-in.org.in/PDF/FAQs_on_CyberSecurityDirections_May2022.pdf (FAQs, May 2022)"
+  methods_of_verification: >-
+    CERT-In, "Methods of verification to compliance with CERT-In Directions issued on 28.04.2022" (file dated
+    22 March 2024; SHA-256 2afc77cc0c2e99dd...), supplied by CERT-In in October 2026. Cited by Guidelines
+    §15.2.1(iv) and by the CERT-In advisory of September 2024 (key recommendation iii).
   source_status: >-
-    The six directions below follow the published Directions. The CERT-In document on methods of
-    verification cited by the Suite could not be retrieved (its URL returns not found on 12 October 2026);
-    the list is to be replaced by that document's enumeration when CERT-In supplies it.
+    The requirements are rows 1 to 5 of the methods of verification, in its order, with its compliance
+    requirement and methods of verification for each, transcribed without change of wording. Row 6 of that
+    document (the compliance requirements of the Directions to be communicated to the auditee and included in
+    the audit report) is met by the verification in the report itself (MC-06). The Directions' item (iii),
+    Point of Contact and furnishing of information, has no row in the document: an entry for it is accepted
+    (MC-06 reads it) but is not scored under Q2.
+  # applies_to: "all", or "conditional" with the sectors and the words in the auditee's name that establish
+  # the condition. An entry of compliance_assessments[] is assigned to a requirement (criteria/q2.py,
+  # assign_directions) by its requirement_id: the id or an alias, a row of this document ('MoV-3', 'Row 3',
+  # 'S. No. 3') or an item of the Directions ('(v)', 'v.', 'Direction 5'); else by the terms of
+  # requirement_text (every term of one group present; a term is a whole word or phrase, or a word beginning
+  # where it ends in '*'); else by a bare number meaning the same in both numberings (1 and 2). A bare 3 to 6
+  # with no text to decide it, or text matching two requirements equally, is referred to the reviewer.
   requirements:
-    - id: DIR-i
-      text: "Connect to the NTP server of NIC or NPL, or to NTP servers traceable to them, for synchronisation of all ICT system clocks"
-    - id: DIR-ii
-      text: "Report cyber incidents of the types in Annexure I to CERT-In within 6 hours of noticing them or being notified of them"
+    - id: MoV-1
+      direction: "(i)"
+      title: "Clock synchronisation with the NTP servers of NIC or NPL"
+      text: >-
+        All service providers, intermediaries, data centres, body corporate and Government organisations shall
+        connect to the Network Time Protocol (NTP) Server of National Informatics Centre (NIC) or National
+        Physical Laboratory (NPL) or with NTP servers traceable to these NTP servers, for synchronisation of all
+        their ICT systems clocks. Entities having ICT infrastructure spanning multiple geographies may also use
+        accurate and standard time source other than NPL and NIC, however it is to be ensured that their time
+        source shall not deviate from NPL and NIC.
+      applies_to: all
+      aliases: ["dir-i", "mov-1", "mov1"]
+      match_terms: [["ntp"], ["clock*", "synchron*"], ["time", "synchron*"], ["time source"], ["nic", "npl"],
+                    ["network time protocol"]]
+      verification:
+        - >-
+          1) During an audit assignment, check whether the audited ICT infrastructure of the auditee organization
+          is synchronized with the system clocks of designated NTP servers. Some of the possible verifications
+          methods are mentioned below: i. Review system logs and audit trails to identify timestamps indicating
+          synchronization events with the designated NTP servers. ii. Analyze network logs and traffic
+          iii. Time Source Verification
+        - >-
+          2) It should be ensured that the time zone information is being recorded along with the time to
+          facilitate accurate conversion when needed.
+    - id: MoV-2
+      direction: "(ii)"
+      title: "Reporting of cyber incidents to CERT-In within 6 hours"
+      text: >-
+        Any service provider, intermediary, data centre, body corporate and Government organisation shall
+        mandatorily report cyber incidents as mentioned in Annexure I to CERT-In within 6 hours of noticing such
+        incidents or being brought to notice about such incidents. The incidents can be reported to CERT-In via
+        email (incident@cert-in.org.in), Phone (1800-11-4949) and Fax (1800-11-6969).
+      applies_to: all
+      aliases: ["dir-ii", "mov-2", "mov2"]
+      match_terms: [["6 hours"], ["six hours"], ["6 hrs"], ["annexure i"], ["incident report*"],
+                    ["report* cyber incident*"], ["incident*", "within 6"]]
+      verification:
+        - >-
+          1) During an audit assessment, it may be ascertained and deduced whether there was any cyber incident
+          as mentioned in Annexure I of the CERT-In directions dated 28.04.2022 had occurred but was not
+          reported to CERT-In within 6 hours of noticing, the same should be immediately brought to the notice
+          of CERT-In.
+        - >-
+          2) If Incident Management functions is under scope of assessment then, it may be assessed whether
+          policy or plan envisage reporting of cyber incidents to CERT-In in compliance with CERT-In directions
+          and reporting requirements.
+        - >-
+          3) Requirement of incident reporting as per CERT-In directions needs to be communicated to auditee by
+          auditing organizations. Same should be included as part of audit report.
+    - id: MoV-3
+      direction: "(v)"
+      title: "Subscriber records of data centres, VPS, cloud and VPN service providers for 5 years"
+      text: >-
+        Data Centres, Virtual Private Server (VPS) providers, Cloud Service providers and Virtual Private Network
+        Service (VPN Service) providers, shall be required to register the following accurate information which
+        must be maintained by them for a period of 5 years or longer duration as mandated by the law after any
+        cancellation or withdrawal of the registration: a. Validated names of subscribers/customers hiring the
+        services b. Period of hire including dates c. IPs allotted to / being used by the members d. Email
+        address and IP address and time stamp used at the time of registration / on-boarding e. Purpose for
+        hiring services f. Validated address and contact numbers g. Ownership pattern of the subscribers /
+        customers hiring services
+      applies_to: conditional
+      applies_when:
+        description: "auditees that are data centres, VPS, cloud service or VPN service providers"
+        sectors: ["Data Centre, Cloud and VPN Services"]
+        auditee_name_terms: ["data centre", "data center", "datacentre", "datacenter", "virtual private server", "vps",
+                             "cloud service", "cloud services", "vpn"]
+      aliases: ["dir-v", "mov-3", "mov3"]
+      match_terms: [["subscriber*"], ["vpn"], ["virtual private server*"], ["vps"], ["data cent*", "regist*"],
+                    ["cloud service provider*"]]
+      verification:
+        - >-
+          1) In case, auditee organization is a Data Centres, Virtual Private Server (VPS) providers, Cloud
+          Service providers or Virtual Private Network Service (VPN Service) providers, auditing organization
+          should check, whether the following information of the subscribers is being maintained by organization
+          for a period of 5 years or longer duration as mandated by the law after any cancellation or withdrawal
+          of the registration: a. Validated names of subscribers/customers hiring the services b. Period of hire
+          including dates c. IPs allotted to / being used by the members d. Email address and IP address and time
+          stamp used at the time of registration / on-boarding e. Purpose for hiring services f. Validated
+          address and contact numbers g. Ownership pattern of the subscribers / customers hiring services.
+        - >-
+          2) Below mentioned verification methods may be followed by the auditing organisations: i. Review of
+          registration policies and procedures, ii. Review of registration forms or agreements to ensure auditee
+          have provisions for collecting accurate subscriber information and the retention period for collected
+          data, iii. Examine the organization's data retention policies, iv. Review audit trails and logs to
+          verify compliance with data registration and retention requirements.
+    - id: MoV-4
+      direction: "(vi)"
+      title: "KYC and transaction records of virtual asset service providers for 5 years"
+      text: >-
+        The virtual asset service providers, virtual asset exchange providers and custodian wallet providers (as
+        defined by Ministry of Finance from time to time) shall mandatorily maintain all information obtained as
+        part of Know Your Customer (KYC) and records of financial transactions for a period of five years
+      applies_to: conditional
+      applies_when:
+        description: "auditees that are virtual asset service, virtual asset exchange or custodian wallet providers"
+        sectors: ["Virtual Asset Services"]
+        auditee_name_terms: ["virtual asset", "crypto", "custodian wallet", "bitcoin", "exchange of virtual"]
+      aliases: ["dir-vi", "mov-4", "mov4"]
+      match_terms: [["kyc"], ["virtual asset*"], ["custodian wallet*"], ["know your customer"]]
+      verification:
+        - >-
+          1) In case, auditee organization is virtual asset service provider, virtual asset exchange provider and
+          / or custodian wallet providers (as defined by Ministry of Finance from time to time), auditing
+          organization should check whether, all information obtained as part of Know Your Customer (KYC) and
+          financial transactions are recorded & maintained for a period of five years.
+        - >-
+          2) Auditing organisations may examine the organization's data retention policies for financial
+          transactions and KYC information.
+    - id: MoV-5
+      direction: "(iv)"
+      title: "Logs of all ICT systems for a rolling 180 days within India"
+      text: >-
+        All service providers, intermediaries, data centres, body corporate and Government organisations shall
+        mandatorily enable logs of all their ICT systems and maintain them securely for a rolling period of 180
+        days and the same shall be maintained within the Indian jurisdiction. These should be provided to CERT-In
+        along with reporting of any incident or when ordered / directed by CERT-In.
+      applies_to: all
+      aliases: ["dir-iv", "mov-5", "mov5"]
+      match_terms: [["log*", "180"], ["log*", "retention"], ["log*", "retain*"], ["logging"],
+                    ["log*", "indian jurisdiction"], ["log*", "rolling period"]]
+      verification:
+        - >-
+          1) During an audit assignment, check whether the logging is enabled on the audited infrastructure and
+          logs are being retained for rolling period of 180 days.
+        - >-
+          2) These can be verified by reviewing the auditee organization's policy documentation such as logging
+          policies and procedures, assessing system configurations to ensure logging is enabled, and confirming
+          that logs are retained for the specified duration. Additionally, audits can involve examining log
+          storage practices to ensure compliance with requirements.
+  not_enumerated:
     - id: DIR-iii
-      text: "Take action or furnish information when ordered by CERT-In, within the time specified, and designate a Point of Contact to interface with CERT-In (Annexure II format)"
-    - id: DIR-iv
-      text: "Enable logs of all ICT systems and maintain them securely for a rolling period of 180 days within the Indian jurisdiction"
-    - id: DIR-v
-      text: "Data centres, virtual private server, cloud service and VPN service providers register and maintain subscriber information for 5 years or longer as mandated by law"
-    - id: DIR-vi
-      text: "Virtual asset service, exchange and custodian wallet providers maintain KYC and records of financial transactions for 5 years"
+      direction: "(iii)"
+      title: "Point of Contact; furnishing of information or assistance when ordered by CERT-In"
+      aliases: ["dir-iii"]
+      match_terms: [["point of contact"], ["poc"], ["annexure ii"], ["furnish*", "information"],
+                    ["provide information"], ["take action"]]
 
 meity_checklist:
   framework: "MeitY Comprehensive Audit Program Checklist"
@@ -110,5 +250,8 @@ sectors:
   Education: []
   E-commerce: []
   IT and ITeS: []
+  # Sectors for which the methods of verification add a requirement (rows 3 and 4); no sector regulation is listed
+  Data Centre, Cloud and VPN Services: []
+  Virtual Asset Services: []
   Manufacturing: []
   Other: []

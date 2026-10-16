@@ -17,6 +17,7 @@ from .modules import select_modules
 from .record_checks import run_record_checks
 from .refdata.store import ReferenceData
 from .report import Report
+from .images import ImageResolver
 from .results import (COMPLIANT, FAIL, INDETERMINATE, NA, NON_COMPLIANT, PASS, PENDING, CriterionResult,
                       EvaluationRecord)
 
@@ -53,14 +54,16 @@ class BenchmarkEngine:
         self.vision_backend = vision_backend
         self.assets_dir = Path(assets_dir) if assets_dir else None
 
-    def evaluate(self, data: dict, overrides: dict | None = None, evaluated_on: _dt.date | None = None) -> EvaluationRecord:
+    def evaluate(self, data: dict, overrides: dict | None = None, evaluated_on: _dt.date | None = None,
+                 images: ImageResolver | None = None) -> EvaluationRecord:
         overrides = overrides or {}
         cfg = self.config
         report = Report(data, theta=cfg.theta)
         evaluator = SampledEvaluator(cfg.curated.rubrics, cfg.sampling, self.text_backend, self.vision_backend)
         if overrides.get("items"):
             evaluator = _OverridingEvaluator(evaluator, overrides["items"])
-        ctx = Context(report=report, config=cfg, evaluator=evaluator, refdata=self.refdata, assets_dir=self.assets_dir)
+        ctx = Context(report=report, config=cfg, evaluator=evaluator, refdata=self.refdata, assets_dir=self.assets_dir,
+                      images=images or ImageResolver(self.assets_dir))
         ctx.modules = select_modules(ctx)                                   # line 1
 
         # Lines 2 to 10: mandatory checks

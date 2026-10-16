@@ -9,8 +9,9 @@ Input layout (a "staging" directory produced by fetch.py or assembled by hand):
 
   staging/
     nvd/nvdcve-2.0-YYYY.json.gz + .meta, nvdcve-2.0-modified.json.gz + .meta
-    nvd_history/*.json              NVD CVE change history API responses
-    cvelist/                        cvelistV5 records (directory tree of CVE-*.json) or *.zip
+    nvd_history/nvd_states.jsonl.gz successive NVD CVSS values from the NVD mirror's git history
+    nvd_history/SOURCE.json         mirror URL, commit and date of first synchronisation (fetch.py)
+    cvelist/                        cvelistV5 records (git clone: directory tree of CVE-*.json) or *.zip
     epss/epss_scores-YYYY-MM-DD.csv.gz
     kev/known_exploited_vulnerabilities.json
     cwe/releases.json               [{"version": "4.15", "release_date": "2024-07-16", "file": "cwec_v4.15.xml"}]
@@ -38,7 +39,8 @@ from pathlib import Path
 from typing import Callable, Iterable, Iterator
 
 from .. import cvss_calc
-from ..util import norm_name
+from ..util import norm_person
+from .nvdrecord import nvd_cwes, nvd_metrics
 
 SCHEMA = Path(__file__).with_name("schema.sql")
 
@@ -68,7 +70,7 @@ def _now() -> str:
 class PackageBuilder:
     def __init__(self, staging: str | Path, curated: str | Path, out_root: str | Path,
                  previous: str | Path | None = None, prepared_on: _dt.date | None = None,
-                 link_epss: bool = True, log: Callable[[str], None] = print):
+                 link_epss: bool = True, log: Callable[[str], None] = print, accept_changes: tuple[str, ...] = ()):
         self.staging = Path(staging)
         self.curated = Path(curated)
         self.prepared_on = prepared_on or _dt.date.today()
@@ -78,6 +80,9 @@ class PackageBuilder:
         self.prev_manifest = json.loads((self.previous / "manifest.json").read_text()) if self.previous else {}
         self.link_epss = link_epss
         self.log = log
+        # sources whose record count may move outside the expected range of the previous package, on the
+        # operator's decision (for example the first real list of empanelled organisations after test records)
+        self.accept_changes = set(accept_changes)
         self.manifest: dict = {"package_id": self.package_id, "prepared_on": self.prepared_on.isoformat(),
                                "prepared_at": _now(), "previous_package": self.prev_manifest.get("package_id"),
                                "cvss_library": cvss_calc.library_identity(), "sources": {}, "files": {}}
@@ -131,8 +136,10 @@ class PackageBuilder:
                 raise SourceError(f"no staged files at {src_dir}")
             self.db.execute("SAVEPOINT src")
             info = fn()
-            entry.update(info)
-            self._check_counts(name, entry["records"])
+            waived = self._check_counts(name, {**entry, **info})
+            entry.update(info)       # only a source that passed its checks is described by what was read from it
+            if waived:
+                entry["count_check"] = waived
             self.db.execute("RELEASE src")
             entry["status"] = "included"
             if not entry.get("retrieved_at") and src_dir.exists():
@@ -149,7 +156,8 @@ class PackageBuilder:
             if self.previous and self.prev_manifest.get("sources", {}).get(name, {}).get("status") in ("included", "carried_forward"):
                 self._carry_forward(name)
                 prev = self.prev_manifest["sources"][name]
-                entry.update({k: prev.get(k) for k in ("retrieved_at", "publisher_version", "records")})
+                entry.update({k: prev.get(k) for k in ("retrieved_at", "publisher_version", "records", "latest_set")
+                              if k in prev})
                 # original files of a carried-forward source stay in the previous package; EPSS files are linked in
                 entry["files"] = prev.get("files", []) if name == "epss" else []
                 entry["status"] = "carried_forward"
@@ -159,21 +167,42 @@ class PackageBuilder:
             self.log(f"source {name}: {entry['status']} ({exc})")
         self.manifest["sources"][name] = entry
 
-    def _check_counts(self, name: str, count: int) -> None:
+    def _check_counts(self, name: str, entry: dict) -> str | None:
+        """Raise SourceError where the record count is outside the expected range of the previous package's;
+        return the note recorded where the operator accepted the change."""
         prev = self.prev_manifest.get("sources", {}).get(name, {})
-        if not prev or not prev.get("records"):
+        count, prev_count = entry["records"], prev.get("records")
+        if name == "empanelment":
+            # every set is kept, so the package total grows with each list received: the latest set is compared
+            # with the latest set of the previous package
+            count = entry["latest_set"]["personnel"]
+            prev_count = (prev.get("latest_set") or {}).get("personnel", prev_count)
+        if not prev or not prev_count:
             if count <= 0:
                 raise SourceError("no records parsed")
-            return
+            return None
         lo, hi = COUNT_BOUNDS.get(name, COUNT_BOUNDS["default"])
-        if not lo * prev["records"] <= count <= hi * prev["records"]:
-            raise SourceError(f"record count {count} outside expected range of previous {prev['records']}")
+        if not lo * prev_count <= count <= hi * prev_count:
+            if name in self.accept_changes:
+                self.log(f"source {name}: record count {count} against previous {prev_count} accepted by the operator")
+                return (f"record count {count} outside the expected range of the previous {prev_count}; accepted by "
+                        "the operator")
+            raise SourceError(f"record count {count} outside expected range of previous {prev_count}")
+        return None
 
     def _keep_originals(self, name: str, src_dir: Path, entry: dict) -> None:
         if name == "epss":
             return  # the EPSS archive itself is the original
         dest = self.out / "originals" / name
-        shutil.copytree(src_dir, dest)
+        if name == "cve_list":
+            # A cloned tree of CVE records is not copied: every record is retained in publisher_record.
+            # The bulk archive (if staged instead) and SOURCE.json, naming the commit, are kept.
+            dest.mkdir(parents=True)
+            for f in sorted(src_dir.iterdir()):
+                if f.is_file():
+                    shutil.copy2(f, dest / f.name)
+        else:
+            shutil.copytree(src_dir, dest, ignore=shutil.ignore_patterns(".git"))
         for p in sorted(dest.rglob("*")):
             if p.is_file():
                 entry["files"].append({"path": str(p.relative_to(self.out)), "sha256": sha256_file(p)})
@@ -181,7 +210,7 @@ class PackageBuilder:
     TABLES = {"nvd": ["nvd_cvss:feed", "cve_cwe:nvd"], "nvd_history": ["nvd_cvss:history"],
               "cve_list": ["cve_list", "cve_cwe:cna", "cna_cvss"], "kev": ["kev"],
               "cwe": ["cwe", "cwe_parent", "cwe_release"], "certin_advisories": ["advisory", "advisory_cve", "advisory_product"],
-              "empanelment": ["empanel_org", "empanel_person"]}
+              "empanelment": ["empanel_org", "empanel_org_name", "empanel_person"]}
 
     def _carry_forward(self, name: str) -> None:
         if name == "epss":
@@ -198,24 +227,80 @@ class PackageBuilder:
         self.db.execute("ATTACH DATABASE ? AS prev", (str(prev_db),))
         for t in self.TABLES.get(name, []):
             table, _, sel = t.partition(":")
-            if (table == "nvd_cvss" and sel == "feed") or (table == "cve_cwe" and sel == "nvd"):
-                continue  # NVD feed rows are always carried (see _carry_nvd_feed_history)
+            if table == "nvd_cvss" or (table == "cve_cwe" and sel == "nvd"):
+                continue  # NVD feed and history rows are always carried (see _carry_nvd_feed_history)
             where = ""
             if table == "nvd_cvss":
                 where = f" WHERE source = '{sel}'"
             elif table == "cve_cwe":
                 where = f" WHERE assigner = '{sel}'"
-            self.db.execute(f"INSERT INTO main.{table} SELECT * FROM prev.{table}{where}")
+            self._copy_rows(table, where)
         self.db.commit()
         self.db.execute("DETACH DATABASE prev")
+        if name == "empanelment":
+            self._index_org_names()
+            self.db.commit()
+
+    def _copy_rows(self, table: str, where: str = "") -> None:
+        """Copy a table's rows from the previous package by column name, so that a package built with an
+        earlier schema (fewer columns, or without the table) can still be carried forward."""
+        prev_cols = [r[1] for r in self.db.execute(f"PRAGMA prev.table_info({table})")]
+        if not prev_cols:
+            return
+        main_cols = {r[1] for r in self.db.execute(f"PRAGMA main.table_info({table})")}
+        cols = ", ".join(c for c in prev_cols if c in main_cols)
+        self.db.execute(f"INSERT INTO main.{table} ({cols}) SELECT {cols} FROM prev.{table}{where}")
+
+    def _index_org_names(self) -> None:
+        """Index the names of organisations carried from a package built before the name index existed."""
+        from .empanelment_pdf import org_name_variants
+        rows = self.db.execute("SELECT set_date, org_id, org_name FROM empanel_org o WHERE NOT EXISTS (SELECT 1 FROM "
+                               "empanel_org_name n WHERE n.set_date = o.set_date AND n.org_id = o.org_id)").fetchall()
+        for sd, oid, org_name in rows:
+            for v in org_name_variants(org_name or ""):
+                self.db.execute("INSERT INTO empanel_org_name VALUES (?, ?, ?)", (sd, oid, v))
+
+    def _earlier_empanelment_sets(self, staged: set[str]) -> list[dict]:
+        """Sets held in the previous package that are no longer staged are carried in, so that the set in force
+        on any earlier release date is still answered (Section 11.3). A staged set supersedes the previous
+        package's set of the same date."""
+        prev_db = self.previous / "reference.sqlite" if self.previous else None
+        if not prev_db or not prev_db.exists():
+            return []
+        prev = sqlite3.connect(f"file:{prev_db}?mode=ro", uri=True)
+        try:
+            if not prev.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'empanel_org'").fetchone():
+                return []
+            carried = []
+            for (sd,) in prev.execute("SELECT DISTINCT set_date FROM empanel_org ORDER BY set_date").fetchall():
+                if sd in staged:
+                    continue
+                n = {t: self._copy_set(prev, t, sd) for t in ("empanel_org", "empanel_org_name", "empanel_person")}
+                carried.append({"set_date": sd, "organisations": n["empanel_org"], "personnel": n["empanel_person"],
+                                "carried_from": self.prev_manifest.get("package_id")})
+            if carried:
+                self._index_org_names()
+            return carried
+        finally:
+            prev.close()
+
+    def _copy_set(self, prev: sqlite3.Connection, table: str, set_date: str) -> int:
+        prev_cols = [r[1] for r in prev.execute(f"PRAGMA table_info({table})")]
+        if not prev_cols:
+            return 0
+        main_cols = {r[1] for r in self.db.execute(f"PRAGMA main.table_info({table})")}
+        cols = [c for c in prev_cols if c in main_cols]
+        rows = prev.execute(f"SELECT {', '.join(cols)} FROM {table} WHERE set_date = ?", (set_date,)).fetchall()
+        self.db.executemany(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", rows)
+        return len(rows)
 
     def _carry_nvd_feed_history(self) -> None:
-        """NVD feed rows of earlier packages are kept, so that 'the latest package on or before the
-        reference date' can be answered from this one package."""
+        """NVD feed and history rows of earlier packages are kept, so that NVD's value as at any reference
+        date can be answered from this one package, and later packages need only the mirror's new history."""
         if not self.previous:
             return
         self.db.execute("ATTACH DATABASE ? AS prev", (str(self.previous / "reference.sqlite"),))
-        self.db.execute("INSERT INTO main.nvd_cvss SELECT * FROM prev.nvd_cvss WHERE source = 'feed'")
+        self.db.execute("INSERT INTO main.nvd_cvss SELECT * FROM prev.nvd_cvss")
         self.db.execute("INSERT INTO main.cve_cwe SELECT * FROM prev.cve_cwe WHERE assigner = 'nvd'")
         r = self.db.execute("SELECT value FROM prev.meta WHERE key = 'earliest_package_date'").fetchone()
         self._earliest = r[0] if r else None
@@ -249,6 +334,7 @@ class PackageBuilder:
             raise SourceError("no NVD CVE JSON 2.0 feeds")
         latest_modified = None
         latest: dict[tuple[str, str], tuple[float, str, str]] = {}
+        self._nvd_current: dict[str, tuple[str, dict]] = {}     # for the check of the NVD mirror
         cwes: dict[str, set[int]] = {}
         count = 0
         # yearly feeds first, then the modified feed so that it supersedes them
@@ -280,27 +366,11 @@ class PackageBuilder:
                 if not cid:
                     continue
                 count += 1
-                modified = (cve.get("lastModified") or "")[:10]
-                metrics = cve.get("metrics", {})
-                for key, version in (("cvssMetricV31", "3.1"), ("cvssMetricV40", "4.0"), ("cvssMetricV30", "3.0")):
-                    chosen = None
-                    for m in metrics.get(key, []):
-                        if m.get("source") == "nvd@nist.gov" or m.get("type") == "Primary":
-                            chosen = m
-                            if m.get("source") == "nvd@nist.gov":
-                                break
-                    if chosen:
-                        cd = chosen.get("cvssData", {})
-                        latest[(cid, version)] = (cd.get("baseScore"), cd.get("vectorString"), modified)
-                ws = set()
-                for w in cve.get("weaknesses", []):
-                    if w.get("source") != "nvd@nist.gov" and w.get("type") != "Primary":
-                        continue
-                    for desc in w.get("description", []):
-                        m = re.match(r"CWE-(\d+)$", desc.get("value", ""))
-                        if m:
-                            ws.add(int(m.group(1)))
-                cwes[cid] = ws
+                modified = cve.get("lastModified") or ""
+                self._nvd_current[cid] = (modified, nvd_metrics(cve))
+                for version, (score, vector) in self._nvd_current[cid][1].items():
+                    latest[(cid, version)] = (score, vector, modified[:10])
+                cwes[cid] = nvd_cwes(cve)
                 self._raw("nvd", cid, cve)
         pkg = self.prepared_on.isoformat()
         for (cid, version), (score, vector, modified) in latest.items():
@@ -309,8 +379,9 @@ class PackageBuilder:
                 "ORDER BY package_date DESC LIMIT 1", (cid, version)).fetchone()
             if prev and prev[0] == score and prev[1] == vector:
                 continue  # unchanged since the previous package: the earlier row continues to apply
+            # valid_from: the record's lastModified date, from which NVD's value has held unchanged
             self.db.execute("INSERT INTO nvd_cvss VALUES (?, ?, ?, ?, ?, ?, 'feed')",
-                            (cid, version, score, vector, pkg, modified))
+                            (cid, version, score, vector, pkg, modified or pkg))
         for cid, ws in cwes.items():
             last = self.db.execute("SELECT max(package_date) FROM cve_cwe WHERE cve_id = ? AND assigner = 'nvd'",
                                    (cid,)).fetchone()[0]
@@ -324,48 +395,54 @@ class PackageBuilder:
         return {"records": count, "publisher_version": latest_modified, "retrieved_at": _mtime(feeds[-1]),
                 "sha256_basis": getattr(self, "_hash_basis", None)}
 
-    @staticmethod
-    def _history_vector(value: str, version: str) -> str | None:
-        """Change-history values seen on the NVD CVE Change History API: 'NIST AV:N/AC:L/...' (2021),
-        a plain 'AV:N/AC:L/...' (NVD from 2026, and ADP sources), and 'NIST (AV:N/AC:M/Au:N/...)' (CVSS v2,
-        which is ignored). A rescore appears as Added (new value) and Removed (old value) in one change."""
-        m = re.search(r"(CVSS:\d\.\d/)?((?:[A-Z]{1,3}:[A-Z]/)*[A-Z]{1,3}:[A-Z])(?![A-Za-z])", value)
-        if not m or "AV:" not in m.group(2):
-            return None
-        body = m.group(2)
-        body = body[body.index("AV:"):]
-        return f"CVSS:{version}/{body}"
+    # Largest share of compared records on which the mirror may differ from NIST's feed
+    MIRROR_MAX_MISMATCH = 0.001
 
     def _load_nvd_history(self) -> dict:
-        files = sorted((self.staging / "nvd_history").glob("*.json"))
-        if not files:
-            raise SourceError("no NVD change history files")
-        count = 0
-        latest = ""
-        for f in files:
-            data = json.loads(f.read_text())
-            for ch in data.get("cveChanges", []):
-                c = ch.get("change", {})
-                cid = (c.get("cveId") or "").upper()
-                created = (c.get("created") or "")[:10]
-                if c.get("sourceIdentifier") not in (None, "nvd@nist.gov"):
+        """NVD's earlier values, from the mirror's git history (fetch.extract_nvd_history).
+
+        Each line states a value NVD held from the record's lastModified time. Before use, the mirror's
+        latest value of every CVE whose lastModified equals that in NIST's feed is compared with NIST's
+        feed; if more than MIRROR_MAX_MISMATCH of them differ, the source fails verification.
+        """
+        d = self.staging / "nvd_history"
+        states = d / "nvd_states.jsonl.gz"
+        if not states.exists():
+            raise SourceError("no NVD history extracted from the mirror (nvd_states.jsonl.gz)")
+        info = json.loads((d / "SOURCE.json").read_text()) if (d / "SOURCE.json").exists() else {}
+        rows = []
+        final: dict[tuple[str, str], tuple] = {}
+        with gzip.open(states, "rt", encoding="utf-8") as fh:
+            for line in fh:
+                r = json.loads(line)
+                cid, version = r["cve_id"].upper(), r["version"]
+                modified = r.get("last_modified") or ""
+                if not modified:
                     continue
-                for det in c.get("details", []):
-                    t = (det.get("type") or "").upper()
-                    version = "4.0" if "4.0" in t else "3.1" if "3.1" in t else "3.0" if "3.0" in t else None
-                    if not version or det.get("action") == "Removed":
+                rows.append((cid, version, r.get("score"), r.get("vector"), modified[:10]))
+                final[(cid, version)] = (modified, r.get("score"), r.get("vector"))
+        current = getattr(self, "_nvd_current", None)
+        check = {"compared": 0, "differ": 0, "examples": []}
+        if current:
+            for cid, (modified, metrics) in current.items():
+                for version in ("3.0", "3.1", "4.0"):
+                    f = final.get((cid, version))
+                    if not f or f[0] != modified:
                         continue
-                    vec = self._history_vector(det.get("newValue") or "", version)
-                    if not vec:
-                        continue
-                    r = cvss_calc.base_score(vec, version)
-                    if r.score is None:
-                        continue
-                    self.db.execute("INSERT INTO nvd_cvss VALUES (?, ?, ?, ?, NULL, ?, 'history')",
-                                    (cid, version, r.score, vec, created))
-                    count += 1
-                    latest = max(latest, created)
-        return {"records": count, "retrieved_at": _mtime(files[-1]), "publisher_version": latest or None}
+                    check["compared"] += 1
+                    if (f[1], f[2]) != metrics.get(version, (None, None)):
+                        check["differ"] += 1
+                        if len(check["examples"]) < 5:
+                            check["examples"].append(f"{cid} CVSS {version}")
+            if check["compared"] and check["differ"] > self.MIRROR_MAX_MISMATCH * check["compared"]:
+                raise SourceError(f"NVD mirror differs from NIST's feed on {check['differ']} of "
+                                  f"{check['compared']} records compared (for example {check['examples']})")
+        else:
+            check["note"] = "NIST's feed unavailable in this preparation; mirror not checked"
+        self.db.executemany("INSERT INTO nvd_cvss VALUES (?, ?, ?, ?, NULL, ?, 'history')", rows)
+        total = self.db.execute("SELECT count(*) FROM nvd_cvss WHERE source = 'history'").fetchone()[0]
+        return {"records": total, "added": len(rows), "retrieved_at": _mtime(states),
+                "publisher_version": info.get("commit_date"), "mirror": info, "check_against_nist_feed": check}
 
     # ---- CVE List ------------------------------------------------------------------
     def _iter_cve_records(self) -> Iterator[dict]:
@@ -385,7 +462,8 @@ class PackageBuilder:
                                     if re.search(r"CVE-\d{4}-\d+\.json$", m):
                                         yield json.loads(inner.read(m))
         for p in sorted(d.rglob("CVE-*.json")):
-            yield json.loads(p.read_text())
+            if ".git" not in p.parts:
+                yield json.loads(p.read_text())
 
     def _load_cve_list(self) -> dict:
         count = 0
@@ -416,7 +494,12 @@ class PackageBuilder:
             self._raw("cve_list", cid, rec)
         if count == 0:
             raise SourceError("no CVE records parsed")
-        return {"records": count, "publisher_version": latest or None}
+        out = {"records": count, "publisher_version": latest or None}
+        src = self.staging / "cvelist" / "SOURCE.json"
+        if src.exists():
+            info = json.loads(src.read_text())
+            out.update({"repository": info, "retrieved_at": info.get("commit_date")})
+        return out
 
     # ---- KEV ------------------------------------------------------------------------
     def _load_kev(self) -> dict:
@@ -496,21 +579,48 @@ class PackageBuilder:
 
     # ---- empanelment records ------------------------------------------------------------
     def _load_empanelment(self) -> dict:
+        """Empanelment sets: the format written by empanelment_pdf.py from CERT-In's list, or a hand-made set
+        of the earlier form ({org_id, name, valid_from, valid_to, personnel: [{name, designation}]})."""
+        from .empanelment_pdf import norm_org, org_name_variants
         files = sorted((self.staging / "empanelment").glob("*.json"))
         if not files:
             raise SourceError("no empanelment record sets")
-        count = 0
+        count, latest, sources, staged = 0, "", [], {}
+        details_keys = ("list_no", "directory_name", "snapshot_pages", "declarations", "locations", "audits_since",
+                        "capabilities", "audits_last_12_months", "manpower_counts", "outsourcing", "foreign_tie_ups",
+                        "foreign_subsidiary", "overseas_offices")
         for f in files:
             data = json.loads(f.read_text())
             sd = str(data["set_date"])[:10]
+            if sd in staged:
+                raise SourceError(f"two staged empanelment sets are dated {sd}: {staged[sd]['file']} and {f.name}")
+            latest = max(latest, sd)
+            people_in_set = sum(len(o.get("personnel", [])) for o in data["organisations"])
+            staged[sd] = {"set_date": sd, "file": f.name, "organisations": len(data["organisations"]),
+                          "personnel": people_in_set}
+            if data.get("source"):
+                sources.append({"set_date": sd, **{k: data["source"].get(k) for k in ("file", "sha256", "pages",
+                                                                                      "document_date", "personnel")}})
             for org in data["organisations"]:
-                self.db.execute("INSERT INTO empanel_org VALUES (?, ?, ?, ?, ?)",
-                                (sd, org["org_id"], org.get("name"), org.get("valid_from"), org.get("valid_to")))
-                for p in org.get("personnel", []):
-                    self.db.execute("INSERT INTO empanel_person VALUES (?, ?, ?, ?, ?)",
-                                    (sd, org["org_id"], p.get("name"), norm_name(p.get("name")), p.get("designation")))
+                oid = org["org_id"]
+                people = org.get("personnel", [])
+                self.db.execute("INSERT INTO empanel_org VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                (sd, oid, org.get("name"), org.get("valid_from"), org.get("valid_to"), org.get("list_no"),
+                                 org.get("information_as_on"), 1 if people else 0, org.get("manpower_statement"),
+                                 json.dumps({k: org.get(k) for k in details_keys if k in org})))
+                names = set(org.get("names") or []) | set(org_name_variants(org.get("name") or ""))
+                for n in sorted(v for v in names | {norm_org(org.get("directory_name"))} if v):
+                    self.db.execute("INSERT INTO empanel_org_name VALUES (?, ?, ?)", (sd, oid, n))
+                for p in people:
+                    self.db.execute("INSERT INTO empanel_person VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    (sd, oid, p.get("name"), norm_person(p.get("name")), p.get("designation"),
+                                     p.get("qualifications"), p.get("experience"), p.get("experience_years"),
+                                     p.get("with_organisation"), p.get("declared_on")))
                     count += 1
-        return {"records": count, "publisher_version": max(json.loads(f.read_text())["set_date"] for f in files)}
+        carried = self._earlier_empanelment_sets(set(staged))
+        return {"records": count + sum(c["personnel"] for c in carried), "publisher_version": latest, "sets": sources,
+                "latest_set": staged[latest], "sets_staged": [staged[k] for k in sorted(staged)],
+                "sets_carried": carried}
 
     # ---- EPSS ----------------------------------------------------------------------------
     def _load_epss(self) -> dict:

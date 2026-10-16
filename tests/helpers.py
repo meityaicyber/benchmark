@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import copy
 import datetime as dt
 import json
@@ -52,7 +53,9 @@ def package() -> Path:
 
 @lru_cache(maxsize=1)
 def refdata() -> ReferenceData:
-    return ReferenceData(package())
+    rd = ReferenceData(package())
+    atexit.register(rd.close)
+    return rd
 
 
 def engine(models: bool = True, level: int = 4, **kw) -> BenchmarkEngine:

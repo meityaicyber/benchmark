@@ -88,12 +88,14 @@ def norm_text(value: Any) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-_HONORIFICS = r"^(mr|mrs|ms|miss|dr|prof|shri|smt|kumari|sri|er)\.?\s+"
+_HONORIFICS = r"^(mr|mrs|ms|miss|dr|prof|shri|smt|kumari|sri|er|col|lt|maj|capt|cdr|brig|gen|wg|gp|cmde)\.?\s+"
 
 
 def norm_name(value: Any) -> str:
-    """Normalise a person's name for exact comparison: case, whitespace, honorifics, dots."""
+    """Normalise a person's name for exact comparison: case, whitespace, dots, and leading honorifics and service
+    ranks ('Mr', 'Dr', 'Shri', 'Lt. Col. (R)')."""
     s = str(value or "").strip().lower()
+    s = re.sub(r"\((?:r|retd|retired)\.?\)", " ", s)       # a retired officer's rank: 'Col. (R)'
     s = re.sub(r"\.", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     prev = None
@@ -101,6 +103,12 @@ def norm_name(value: Any) -> str:
         prev = s
         s = re.sub(_HONORIFICS, "", s).strip()
     return s
+
+
+def norm_person(value: Any) -> str:
+    """A person's name as compared with the empanelment records: norm_name, without the serial digits that the
+    list sets after a repeated name ('Amit Kumar 2', 'KUNDAN KUMAR1')."""
+    return re.sub(r"\s*\d+$", "", norm_name(re.sub(r"[-‐–]", " ", str(value or "")))).strip()
 
 
 def contains_phrase(text: Any, phrase: str) -> bool:

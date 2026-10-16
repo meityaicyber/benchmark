@@ -598,6 +598,24 @@
       "requirement_text": "Point of Contact designated",
       "status": "Compliant",
       "evidence_refs": []
+    },
+    {
+      "sr_no": 4,
+      "framework": "Other",
+      "framework_name": "CERT-In Guidelines for Secure Application Design, Development, Implementation & Operations",
+      "requirement_id": "4.1",
+      "requirement_text": "Authentication, authorization and session management",
+      "status": "Non-compliant",
+      "evidence_refs": [
+        {
+          "finding_id": "WASA-01",
+          "proof_of_concept_sr_no": 1,
+          "description": "API returns another citizen's application without an ownership check"
+        }
+      ],
+      "related_finding_ids": [
+        "WASA-01"
+      ]
     }
   ],
   "appendices": {

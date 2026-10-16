@@ -79,7 +79,7 @@ class SampledEvaluator:
                 '{"level": <integer 1 to 5>, "rationale": "<one line>"}')
 
     def score(self, item_id: str, rubric_key: str, content: Any, evaluator: str = "text",
-              image_path: str | None = None, context: Any = None) -> SampledItem:
+              image_path: str | None = None, context: Any = None, extra_images: list[str] | None = None) -> SampledItem:
         backend = self.vision if evaluator == "vision" else self.text
         item = SampledItem(item_id=item_id, rubric=rubric_key, evaluator=evaluator)
         if backend is None:
@@ -92,12 +92,16 @@ class SampledEvaluator:
         if context is not None:
             user += "Context for the item:\n<report_content>\n" + _as_text(context) + "\n</report_content>\n\n"
         user += "Item to rate:\n<report_content>\n" + _as_text(content) + "\n</report_content>"
-        if image_path:
+        if image_path and extra_images:
+            user += (f"\nThe first attached image is the proof-of-concept entry being rated; the {len(extra_images)} "
+                     f"image(s) after it are the original evidence of the same finding, for comparison.")
+        elif image_path:
             user += "\nThe proof-of-concept image is attached."
         for seed in self.seeds():
             item.seeds.append(seed)
             try:
-                raw = backend.complete(ModelCall(system, user, seed, self.temperature, image_path))
+                raw = backend.complete(ModelCall(system, user, seed, self.temperature, image_path,
+                                                 list(extra_images or [])))
             except BackendUnavailable as exc:
                 item.note = f"evaluator unavailable: {exc}"
                 item.ratings, item.rationales = [], []
