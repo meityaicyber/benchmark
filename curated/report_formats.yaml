@@ -1,0 +1,48 @@
+# CERT-In's audit report formats, supplied in October 2026: "Audit Report for Compliance / Regulatory Audits" and
+# "Audit Report Format for Technical Security Assessment Report (VAPT / Red Team / Cloud)". Both end the executive
+# summary (section 8) with an "Overall Report Rating" on a scale of four levels, defined in one table and given
+# severity criteria ("typical findings") and a risk level in a second. docs/REPORT_FORMATS.md maps both formats to
+# the master schema and to the Suite's checks.
+revision: "2026-10-16"
+
+overall_rating:
+  # Applied in Q5 (K, consistency of the executive summary with the observations), pending CERT-In's confirmation:
+  # a stated overall rating may not be better than the Critical and High findings not closed allow.
+  apply_in_q5: true
+  pending_confirmation: true
+  # Best to worst. names: words by which a stated rating is recognised as the level (whole words, case ignored;
+  # "medium" sits in the middle of any scale, so it names Moderate); risk_names: the level's risk level written as
+  # "<word> risk". A bare risk word ("High", "Low") does not say which way the scale runs, so it identifies no level,
+  # but it counts where a rating names two levels ("Moderate to High"). A rating naming more than one level, none, or
+  # carrying a negation ("Not Strong") is not compared. max_critical and max_high: the most Critical and High findings
+  # that the level's severity criteria allow. Strong: "No Critical or High-risk findings". Moderate: "1-2 High-risk
+  # findings", and a Critical finding makes a report Critical. Weak: "3-5 High-risk findings"; "5 or more High-risk
+  # findings" also defines Critical, so up to 5 are allowed. The criteria on Medium and Low findings, systemic failures
+  # and repeated issues overlap between levels and call for judgement, and are not applied.
+  levels:
+    - id: strong
+      label: "Well Controlled / Strong"
+      risk_level: Low
+      names: ["well controlled", "strong"]
+      risk_names: ["low"]
+      max_critical: 0
+      max_high: 0
+    - id: moderate
+      label: "Adequately Controlled / Moderate"
+      risk_level: Moderate
+      names: ["adequately controlled", "moderate", "medium"]
+      risk_names: ["moderate", "medium"]
+      max_critical: 0
+      max_high: 2
+    - id: weak
+      label: "Needs Improvement / Weak"
+      risk_level: High
+      names: ["needs improvement", "weak"]
+      risk_names: ["high"]
+      max_critical: 0
+      max_high: 5
+    - id: critical
+      label: "Unsatisfactory / Critical"
+      risk_level: Critical
+      names: ["unsatisfactory", "critical"]
+      risk_names: ["critical"]

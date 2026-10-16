@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SUITE_CONFIG = REPO_ROOT / "config" / "suite.yaml"
 DEFAULT_CURATED_DIR = REPO_ROOT / "curated"
 
-CURATED_FILES = ("frameworks", "personnel", "engagements", "modules", "regulatory", "tools", "rubrics")
+CURATED_FILES = ("frameworks", "personnel", "engagements", "modules", "regulatory", "tools", "rubrics", "report_formats")
 
 
 def _load_yaml(path: Path) -> Any:
@@ -42,6 +42,7 @@ class Curated:
     regulatory: dict
     tools: dict
     rubrics: dict
+    report_formats: dict = field(default_factory=dict)
     source: str = ""
     digest: str = ""
 
@@ -177,7 +178,7 @@ def load_curated(curated_dir: str | Path | None = None) -> Curated:
     data = {}
     for name in CURATED_FILES:
         p = d / f"{name}.yaml"
-        data[name] = _load_yaml(p) if p.exists() else {}
+        data[name] = (_load_yaml(p) or {}) if p.exists() else {}
     return Curated(**data, source=str(d), digest=_digest(data))
 
 

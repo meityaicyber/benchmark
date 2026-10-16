@@ -18,6 +18,7 @@ Input layout (a "staging" directory produced by fetch.py or assembled by hand):
     cwe/*.xml
     certin_advisories/advisories.json
     empanelment/*.json              one file per set of records received from CERT-In
+    empanelment_register/register_*.json  one file per register of identifiers and validity received from CERT-In
   curated/ (the project's curated lists, copied into the package)
 """
 
@@ -35,6 +36,7 @@ import sqlite3
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
+from collections import Counter
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
 
@@ -44,11 +46,12 @@ from .nvdrecord import nvd_cwes, nvd_metrics
 
 SCHEMA = Path(__file__).with_name("schema.sql")
 
-SOURCES = ("nvd", "nvd_history", "cve_list", "epss", "kev", "cwe", "certin_advisories", "empanelment")
+SOURCES = ("nvd", "nvd_history", "cve_list", "epss", "kev", "cwe", "certin_advisories", "empanelment",
+           "empanelment_register")
 
 # Record-count bounds relative to the preceding package (step 2)
 COUNT_BOUNDS = {"default": (0.95, 1.5), "kev": (0.98, 1.5), "certin_advisories": (0.98, 2.0),
-                "empanelment": (0.5, 2.0), "nvd_history": (0.95, 3.0)}
+                "empanelment": (0.5, 2.0), "empanelment_register": (0.5, 2.0), "nvd_history": (0.95, 3.0)}
 
 
 class SourceError(Exception):
@@ -102,10 +105,11 @@ class PackageBuilder:
         self._carry_nvd_feed_history()
         steps = [("nvd", self._load_nvd), ("nvd_history", self._load_nvd_history), ("cve_list", self._load_cve_list),
                  ("kev", self._load_kev), ("cwe", self._load_cwe), ("certin_advisories", self._load_advisories),
-                 ("empanelment", self._load_empanelment)]
+                 ("empanelment", self._load_empanelment), ("empanelment_register", self._load_register)]
         for name, fn in steps:
             self._run_source(name, fn)
         self._run_source("epss", self._load_epss)
+        self._link_registers()
         self._set_meta()
         self.db.commit()
         self.db.execute("VACUUM")
@@ -156,8 +160,8 @@ class PackageBuilder:
             if self.previous and self.prev_manifest.get("sources", {}).get(name, {}).get("status") in ("included", "carried_forward"):
                 self._carry_forward(name)
                 prev = self.prev_manifest["sources"][name]
-                entry.update({k: prev.get(k) for k in ("retrieved_at", "publisher_version", "records", "latest_set")
-                              if k in prev})
+                entry.update({k: prev.get(k) for k in ("retrieved_at", "publisher_version", "records", "latest_set",
+                                                       "latest_register") if k in prev})
                 # original files of a carried-forward source stay in the previous package; EPSS files are linked in
                 entry["files"] = prev.get("files", []) if name == "epss" else []
                 entry["status"] = "carried_forward"
@@ -177,6 +181,10 @@ class PackageBuilder:
             # with the latest set of the previous package
             count = entry["latest_set"]["personnel"]
             prev_count = (prev.get("latest_set") or {}).get("personnel", prev_count)
+        elif name == "empanelment_register":
+            # likewise every register is kept: the latest register is compared with the previous latest register
+            count = entry["latest_register"]["organisations"]
+            prev_count = (prev.get("latest_register") or {}).get("organisations", prev_count)
         if not prev or not prev_count:
             if count <= 0:
                 raise SourceError("no records parsed")
@@ -210,7 +218,8 @@ class PackageBuilder:
     TABLES = {"nvd": ["nvd_cvss:feed", "cve_cwe:nvd"], "nvd_history": ["nvd_cvss:history"],
               "cve_list": ["cve_list", "cve_cwe:cna", "cna_cvss"], "kev": ["kev"],
               "cwe": ["cwe", "cwe_parent", "cwe_release"], "certin_advisories": ["advisory", "advisory_cve", "advisory_product"],
-              "empanelment": ["empanel_org", "empanel_org_name", "empanel_person"]}
+              "empanelment": ["empanel_org", "empanel_org_name", "empanel_person"],
+              "empanelment_register": ["empanel_register", "empanel_register_name"]}
 
     def _carry_forward(self, name: str) -> None:
         if name == "epss":
@@ -621,6 +630,176 @@ class PackageBuilder:
         return {"records": count + sum(c["personnel"] for c in carried), "publisher_version": latest, "sets": sources,
                 "latest_set": staged[latest], "sets_staged": [staged[k] for k in sorted(staged)],
                 "sets_carried": carried}
+
+    # ---- CERT-In's register of identifiers and validity -----------------------------------
+    def _load_register(self) -> dict:
+        """Registers of the organisations' CERT-In references, AMBAK codes and validity of empanelment, in the
+        format written by empanelment_register.py. Every register received is kept under its date, as the sets are.
+        A row needs a name; its codes and validity may be missing (the converter warns of each)."""
+        from .empanelment_register import check_date, name_variants, norm_ambak, norm_reference
+        files = sorted((self.staging / "empanelment_register").glob("register_*.json"))
+        if not files:
+            raise SourceError("no registers of identifiers and validity staged")
+        staged: dict[str, dict] = {}
+        for f in files:
+            data = json.loads(f.read_text())
+            rd = str(data["register_date"])[:10]
+            try:
+                check_date(rd)
+            except ValueError as exc:
+                raise SourceError(f"{f.name}: register {exc}")
+            if rd in staged:
+                raise SourceError(f"two staged registers are dated {rd}: {staged[rd]['file']} and {f.name}")
+            rows = data.get("organisations") or []
+            if not rows:
+                raise SourceError(f"{f.name}: no organisations")
+            seen, counts = set(), Counter()
+            for o in rows:
+                no, name = o.get("row_no"), (o.get("name") or "").strip()
+                if not name:
+                    raise SourceError(f"{f.name}: row {no} gives no name")
+                if no is None or no in seen:
+                    raise SourceError(f"{f.name}: row number {no!r} missing or repeated")
+                seen.add(no)
+                ambak, ref = norm_ambak(o.get("ambak_code")), (o.get("certin_reference") or "").strip() or None
+                valid_to = o.get("valid_to")
+                if valid_to is not None:
+                    try:
+                        check_date(valid_to)
+                    except ValueError as exc:
+                        raise SourceError(f"{f.name}: row {no}: validity {exc}")
+                counts["with_validity"] += valid_to is not None
+                counts["with_ambak_code"] += ambak is not None
+                counts["with_reference"] += ref is not None
+                former = o.get("former_names")
+                other = o.get("other_names")
+                former = [str(x) for x in former] if isinstance(former, list) else None
+                other = [str(x) for x in other] if isinstance(other, list) else None
+                self.db.execute("INSERT INTO empanel_register VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                (rd, no, None if o.get("serial") is None else str(o.get("serial")), ambak, ref,
+                                 norm_reference(ref) if ref else None, name, valid_to,
+                                 json.dumps(former) if former is not None else None,
+                                 json.dumps(other) if other is not None else None))
+                for v in name_variants(name, former, other):
+                    self.db.execute("INSERT INTO empanel_register_name VALUES (?, ?, ?)", (rd, no, v))
+            staged[rd] = {"register_date": rd, "file": f.name, "organisations": len(rows), **counts,
+                          "sha256": (data.get("source") or {}).get("sha256"),
+                          "document_date": (data.get("source") or {}).get("document_date"),
+                          "warnings": len(data.get("warnings") or [])}
+        carried = self._earlier_registers(set(staged))
+        latest = max(staged)
+        return {"records": sum(s["organisations"] for s in staged.values()) + sum(c["organisations"] for c in carried),
+                "publisher_version": latest, "latest_register": staged[latest],
+                "registers_staged": [staged[k] for k in sorted(staged)], "registers_carried": carried}
+
+    def _earlier_registers(self, staged: set[str]) -> list[dict]:
+        """Registers held in the previous package and no longer staged are carried in (as the sets are)."""
+        prev_db = self.previous / "reference.sqlite" if self.previous else None
+        if not prev_db or not prev_db.exists():
+            return []
+        prev = sqlite3.connect(f"file:{prev_db}?mode=ro", uri=True)
+        try:
+            if not prev.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'empanel_register'").fetchone():
+                return []
+            carried = []
+            for (rd,) in prev.execute("SELECT DISTINCT register_date FROM empanel_register ORDER BY register_date").fetchall():
+                if rd in staged:
+                    continue
+                n = self._copy_rows_where(prev, "empanel_register", "register_date", rd)
+                self._copy_rows_where(prev, "empanel_register_name", "register_date", rd)
+                carried.append({"register_date": rd, "organisations": n, "carried_from": self.prev_manifest.get("package_id")})
+            return carried
+        finally:
+            prev.close()
+
+    def _copy_rows_where(self, prev: sqlite3.Connection, table: str, column: str, value: str) -> int:
+        prev_cols = [r[1] for r in prev.execute(f"PRAGMA table_info({table})")]
+        if not prev_cols:
+            return 0
+        main_cols = {r[1] for r in self.db.execute(f"PRAGMA main.table_info({table})")}
+        cols = [c for c in prev_cols if c in main_cols]
+        rows = prev.execute(f"SELECT {', '.join(cols)} FROM {table} WHERE {column} = ?", (value,)).fetchall()
+        self.db.executemany(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", rows)
+        return len(rows)
+
+    def _link_registers(self) -> None:
+        """Link each row of each register to the organisation of each set that it names: by its name, or a former or
+        other name it gives; failing that, by its AMBAK code where a row of another register with that code is
+        linked to one organisation of the set (an organisation renamed without its former name). An organisation can
+        then be given its identifiers and validity, and an identifier in a report can find the organisation. A row
+        naming no organisation of a set, or more than one, is not linked; the counts for the latest register and the
+        latest set are recorded."""
+        entry = self.manifest["sources"].get("empanelment_register") or {}
+        if entry.get("status") not in ("included", "carried_forward"):
+            return
+        self.db.execute("DELETE FROM empanel_register_link")
+        sets = [r[0] for r in self.db.execute("SELECT DISTINCT set_date FROM empanel_org ORDER BY set_date")]
+        rows = {(rd, no): {"name": n, "ambak": a} for rd, no, n, a in self.db.execute(
+            "SELECT register_date, row_no, org_name, ambak_code FROM empanel_register")}
+        regs = sorted({rd for rd, _ in rows})
+        if not sets or not regs:
+            entry["links"] = {"note": "no empanelment set held to link the registers to" if not sets else "no register held"}
+            return
+        variants: dict[tuple[str, int], set[str]] = {k: set() for k in rows}
+        for rd, no, v in self.db.execute("SELECT register_date, row_no, name_norm FROM empanel_register_name"):
+            variants.setdefault((rd, no), set()).add(v)
+        summary = {}
+        for sd in sets:
+            index: dict[str, set[str]] = {}
+            for oid, v in self.db.execute("SELECT org_id, name_norm FROM empanel_org_name WHERE set_date = ?", (sd,)):
+                index.setdefault(v, set()).add(oid)
+            org_names = {oid: n for oid, n in self.db.execute("SELECT org_id, org_name FROM empanel_org WHERE set_date = ?",
+                                                              (sd,))}
+            link: dict[tuple[str, int], str] = {}
+            ambiguous: dict[tuple[str, int], set[str]] = {}
+            for key in sorted(rows):
+                ids = set().union(*(index.get(v, set()) for v in variants[key]))
+                if len(ids) == 1:
+                    link[key] = ids.pop()
+                elif ids:
+                    ambiguous[key] = ids
+            # A row its name does not link takes the organisation of its AMBAK code where rows linked by name give that
+            # code to one organisation of the set; where the row names several organisations, that one must be among
+            # them; and another row of the same register with the code must name the same organisation (otherwise the
+            # register gives the code to two organisations).
+            by_code: dict[str, set[str]] = {}
+            for key, oid in link.items():
+                if rows[key]["ambak"]:
+                    by_code.setdefault(rows[key]["ambak"], set()).add(oid)
+            via_code: set[tuple[str, int]] = set()
+            for key in sorted(rows):
+                code = rows[key]["ambak"]
+                if key in link or not code or len(by_code.get(code, ())) != 1:
+                    continue
+                oid = next(iter(by_code[code]))
+                if key in ambiguous and oid not in ambiguous[key]:
+                    continue
+                twins = [k for k in rows if k != key and k[0] == key[0] and rows[k]["ambak"] == code]
+                if any(not (variants[k] & variants[key]) for k in twins):
+                    continue
+                link[key] = oid
+                via_code.add(key)
+            for (rd, no), oid in link.items():
+                self.db.execute("INSERT INTO empanel_register_link VALUES (?, ?, ?, ?)", (rd, no, sd, oid))
+            for rd in regs:
+                keys = [k for k in rows if k[0] == rd]
+                linked: dict[str, list[str]] = {}
+                for k in keys:
+                    if k in link:
+                        linked.setdefault(link[k], []).append(rows[k]["name"])
+                summary[(rd, sd)] = {
+                    "register": rd, "set": sd, "rows": len(keys), "linked": sum(len(v) for v in linked.values()),
+                    "linked_by_ambak_code": sum(1 for k in keys if k in via_code),
+                    "rows_naming_no_organisation_of_the_set": sorted(rows[k]["name"] for k in keys
+                                                                     if k not in link and k not in ambiguous),
+                    "rows_naming_several_organisations": sorted(rows[k]["name"] for k in keys
+                                                                if k in ambiguous and k not in link),
+                    "organisations_with_several_rows": sorted(f"{org_names.get(o)}: {'; '.join(v)}"
+                                                              for o, v in linked.items() if len(v) > 1),
+                    "organisations_without_a_row": sorted(n or o for o, n in org_names.items() if o not in linked)}
+        entry["links"] = summary[(regs[-1], sets[-1])]
+        entry["links_all"] = [{k: s[k] for k in ("register", "set", "rows", "linked", "linked_by_ambak_code")}
+                              for s in summary.values()]
 
     # ---- EPSS ----------------------------------------------------------------------------
     def _load_epss(self) -> dict:

@@ -76,6 +76,15 @@ def _summary(d: dict) -> str:
         lines.append(f"  {c['id']} {c['result']} {', '.join(c['clauses'])}: {'; '.join(c['deficiencies'][:2])}")
     for c in d["criteria"]:
         lines.append(f"  {c['id']} {c['name']}: {c['score'] if c['evaluable'] else 'not evaluable'} (weight {c['weight']})")
+    org = d.get("auditing_organisation") or {}
+    if org.get("found"):
+        ids = ", ".join(f"{label} {org[k]}" for k, label in (("ambak_code", "AMBAK code"),
+                                                             ("certin_reference", "CERT-In reference")) if org.get(k))
+        validity = org.get("validity_on_release_date")
+        until = (f"; empanelment valid until {org['valid_to']}" if validity == "valid" else
+                 f"; empanelment recorded as valid until {org['valid_to']}, before the release date (see MC-10)"
+                 if validity == "lapsed" else f"; empanelment validity: {validity} (see MC-10)" if validity else "")
+        lines.append(f"  Auditing organisation: {org.get('name_in_records')}" + (f" ({ids})" if ids else "") + until)
     lines.append(f"  Reference Data Package: {d['reference_data'].get('package_id')} "
                  f"(age {d['reference_data'].get('age_days')} days); referrals: {len(d['referrals'])}")
     return "\n".join(lines)
@@ -99,6 +108,15 @@ def cmd_rdp(a: argparse.Namespace) -> int:
                                         log=lambda m: print(m, file=sys.stderr))
         data = json.loads(out.read_text())
         print(f"{out}: {len(data['organisations'])} organisations, {data['source']['personnel']} personnel; "
+              f"{len(data['warnings'])} warnings")
+        for w in data["warnings"]:
+            print(f"  warning: {w}", file=sys.stderr)
+    elif a.rdp_cmd == "convert-register":
+        from .refdata import empanelment_register
+        out = empanelment_register.write_register(a.xlsx, Path(a.staging) / "empanelment_register", a.register_date)
+        data = json.loads(out.read_text())
+        dated = sum(1 for o in data["organisations"] if o.get("valid_to"))
+        print(f"{out}: {len(data['organisations'])} organisations, {dated} with a validity date; "
               f"{len(data['warnings'])} warnings")
         for w in data["warnings"]:
             print(f"  warning: {w}", file=sys.stderr)
@@ -129,7 +147,8 @@ def cmd_rdp(a: argparse.Namespace) -> int:
             fetch.fetch_nvd_history(st, Path(a.nvd_mirror), _date(a.history_since))
         if a.cwe_releases:
             fetch.fetch_cwe(st, json.loads(Path(a.cwe_releases).read_text()))
-        print(f"staged in {st}; add CERT-In advisories and empanelment records received from CERT-In")
+        print(f"staged in {st}; add CERT-In advisories, and the list of empanelled organisations and the register "
+              "of their identifiers and validity received from CERT-In (convert-empanelment, convert-register)")
     return 0
 
 
@@ -211,6 +230,12 @@ def build_parser() -> argparse.ArgumentParser:
     ce.add_argument("pdf")
     ce.add_argument("--staging", required=True)
     ce.add_argument("--set-date", help="date on which the list was received (default: the document's date)")
+    cr = rs.add_parser("convert-register", help="preparation host only: convert CERT-In's register of the empanelled "
+                                                 "organisations' AMBAK codes, CERT-In references and validity of "
+                                                 "empanelment (spreadsheet)")
+    cr.add_argument("xlsx")
+    cr.add_argument("--staging", required=True)
+    cr.add_argument("--register-date", help="date on which the register was received (default: the spreadsheet's date)")
     k = rs.add_parser("keygen")
     k.add_argument("--private", required=True)
     k.add_argument("--public", required=True)

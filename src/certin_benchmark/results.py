@@ -123,6 +123,7 @@ class EvaluationRecord:
     source: dict[str, Any] = field(default_factory=dict)
     report_structure: list[Any] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    auditing_organisation: dict[str, Any] = field(default_factory=dict)
 
     @property
     def checks_not_met(self) -> list[dict[str, Any]]:

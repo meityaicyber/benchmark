@@ -2,14 +2,100 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 from ..context import Context
 from .base import add_sampled, available, finish, new
 
 
+NEGATION = re.compile(r"(?<![a-z])(not|no|non|never|neither|nor|without)(?![a-z])")
+
+
+def _rating_levels(spec: dict, rating: str) -> tuple[list[dict], list[dict]]:
+    """(levels the rating names by a level's words or as '<word> risk', levels it names in any way). Any way
+    includes a bare risk level ('High', 'Low'), which on its own does not say which way the scale runs, so it
+    counts towards naming two levels ('Moderate to High') but never identifies a level alone."""
+    text = re.sub(r"[^a-z]+", " ", rating.lower()).strip()
+
+    def says(words: list[str]) -> bool:
+        return any(re.search(rf"(?<![a-z]){w}(?![a-z])", text) for w in words)
+
+    named, mentioned = [], []
+    for level in spec.get("levels") or []:
+        words = [re.escape(w.lower()) for w in level.get("names") or []]
+        risk = [re.escape(w.lower()) + r"\s+risk" for w in level.get("risk_names") or []]
+        bare = [re.escape(w.lower()) for w in level.get("risk_names") or []]
+        if says(words + risk):
+            named.append(level)
+            mentioned.append(level)
+        elif says(bare):
+            mentioned.append(level)
+    return named, mentioned
+
+
+def _closed(status) -> bool:
+    return str(status or "").strip().lower().startswith("closed")
+
+
+SEVERITY_LETTERS = {"c": "critical", "h": "high", "m": "medium", "l": "low"}
+
+
+def _severity(value) -> str:
+    s = str(value or "").strip().lower()
+    return SEVERITY_LETTERS.get(s, s)
+
+
+def rating_consistency(ctx: Context, cr) -> list[str]:
+    """The overall rating stated in the executive summary is not better than CERT-In's report formats allow for the
+    Critical and High findings not closed (curated/report_formats.yaml; pending CERT-In's confirmation)."""
+    spec = (ctx.curated.report_formats or {}).get("overall_rating") or {}
+    if not spec.get("apply_in_q5") or not available(ctx, "executive_summary.overall_security_posture"):
+        return []
+    posture = ctx.report.get("executive_summary.overall_security_posture")
+    rating = posture.get("rating") if isinstance(posture, dict) else None
+    if not ctx.present(rating):
+        return []
+    rating = str(rating)
+    named, mentioned = _rating_levels(spec, rating)
+    if NEGATION.search(rating.lower()):
+        cr.notes.append(f"overall rating '{rating}' is stated with a negation; not compared with the findings")
+        return []
+    if len(mentioned) > 1:
+        cr.notes.append(f"overall rating '{rating}' names more than one level of CERT-In's scale "
+                        f"({'; '.join(lv['label'] for lv in mentioned)}); not compared with the findings")
+        return []
+    if len(named) != 1:
+        return []
+    obs = ctx.report.observations
+    if not all(available(ctx, f"detailed_observations[{j}].severity", f"detailed_observations[{j}].status")
+               for j in range(len(obs))):
+        cr.notes.append("severity or status of an observation extracted below the confidence threshold; overall rating "
+                        "not compared with the findings")
+        return []
+    if any(not ctx.present(o.get("status")) for o in obs if _severity(o.get("severity")) in ("critical", "high")):
+        cr.notes.append("a Critical or High observation states no status; overall rating not compared with the findings")
+        return []
+    level = named[0]
+    open_obs = [o for o in obs if not _closed(o.get("status"))]
+    critical = sum(1 for o in open_obs if _severity(o.get("severity")) == "critical")
+    high = sum(1 for o in open_obs if _severity(o.get("severity")) == "high")
+    cr.notes.append(f"overall rating '{rating}' read as CERT-In's '{level['label']}'; findings not closed: {critical} "
+                    f"Critical, {high} High" + (" (rule pending CERT-In's confirmation)" if spec.get("pending_confirmation")
+                                                else ""))
+    limit_c, limit_h = level.get("max_critical"), level.get("max_high")
+    if limit_c is not None and critical > limit_c:
+        return [f"overall rating '{rating}' (CERT-In's '{level['label']}') stated with {critical} Critical finding(s) not "
+                f"closed; CERT-In's severity criteria allow {'none' if limit_c == 0 else limit_c} at that level"]
+    if limit_h is not None and high > limit_h:
+        return [f"overall rating '{rating}' (CERT-In's '{level['label']}') stated with {high} High finding(s) not closed; "
+                f"CERT-In's severity criteria allow {'none' if limit_h == 0 else f'at most {limit_h}'} at that level"]
+    return []
+
+
 def consistency(ctx: Context, cr) -> int:
-    """K: 1 where every summary row matches exactly one observation and the counts agree."""
+    """K: 1 where every summary row matches exactly one observation and the counts agree, and the overall rating is
+    one the findings allow under CERT-In's report formats (rating_consistency)."""
     obs = ctx.report.observations
     rows = [r for r in (ctx.report.get("executive_summary.summary_table") or []) if isinstance(r, dict)]
     problems = []
@@ -45,6 +131,7 @@ def consistency(ctx: Context, cr) -> int:
         for sev in ("critical", "high", "medium", "low"):
             if (sc.get(sev) or 0) != actual.get(sev, 0):
                 problems.append(f"severity_count.{sev} {sc.get(sev)} does not equal {actual.get(sev, 0)}")
+    problems.extend(rating_consistency(ctx, cr))
     cr.deficiencies.extend(problems)
     return 0 if problems else 1
 

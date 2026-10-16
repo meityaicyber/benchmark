@@ -23,8 +23,10 @@ The converter reads both parts and writes the empanelment set read by build.py (
      "warnings": [...]}
 
 Contact persons, telephone numbers and e-mail addresses in the directory are not carried: the Suite does
-not use them. CERT-In publishes no empanelment identifier and no period of validity; org_id is derived
-from the organisation's name, and an organisation's presence in a set is its empanelment on the set date.
+not use them. The list gives no empanelment identifier and no period of validity; org_id is derived from
+the organisation's name, and an organisation's presence in a set is its listing on the set date. The identifiers
+(AMBAK code, CERT-In reference) and the validity of empanelment come from CERT-In's register of the organisations,
+converted by empanelment_register.py and linked to each set by name in build.py.
 
 Runs on the preparation host only; it needs pdfplumber (pip install pdfplumber).
 """

@@ -52,14 +52,35 @@ class Context:
         if rd is not None and rd.available("empanelment"):
             org_id = self.report.get("report_meta.auditing_organization.certin_empanelment_id")
             org_name = self.report.get("report_meta.auditing_organization.name")
-            on = parse_date(self.report.get("report_meta.report_release_date")) or self.report.reference_date()
+            released = parse_date(self.report.get("report_meta.report_release_date"))
+            on = released or self.report.reference_date()
             if on is not None and (self.present(org_id) or self.present(org_name)):
-                rec = rd.empanelment(str(org_id) if self.present(org_id) else None, on,
+                rec = rd.empanelment(org_id if self.present(org_id) else None, on,
                                      str(org_name) if self.present(org_name) else None)
                 if rec is not None:
                     rec["looked_up_on"] = on.isoformat()
+                    rec["date_used"] = "report release date" if released else "assessment end date"
         self.__dict__["_empanelment"] = rec
         return rec
+
+    def auditing_organisation(self) -> dict:
+        """The auditing organisation as the report states it and as the empanelment records identify it, with its
+        AMBAK code and CERT-In reference where CERT-In's register gives them: the key under which Objective 4 groups
+        an agency's reports."""
+        out = {"name_stated": self.report.get("report_meta.auditing_organization.name"),
+               "identifier_stated": self.report.get("report_meta.auditing_organization.certin_empanelment_id")}
+        rec = self.empanelment_record()
+        if rec is None:
+            return out
+        out.update({"found": bool(rec.get("found")), "matched_by": rec.get("match"), "empanelment_set": rec.get("set_date")})
+        if rec.get("found"):
+            out.update({"org_id": rec.get("org_id"), "name_in_records": rec.get("org_name")})
+        reg = rec.get("register") or {}
+        if reg:
+            out.update({"ambak_code": reg.get("ambak_code"), "certin_reference": reg.get("certin_reference"),
+                        "valid_to": reg.get("valid_to"), "validity_on_release_date": reg.get("validity"),
+                        "register": reg.get("register_date")})
+        return out
 
     def declared_person(self, name: str | None) -> list[dict]:
         """Entries for a person in the organisation's empanelment records (exact name after normalisation)."""

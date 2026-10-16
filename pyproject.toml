@@ -16,8 +16,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# preparation host only: conversion of CERT-In's PDF list of empanelled organisations
-preparation = ["pdfplumber>=0.10"]
+# preparation host only: conversion of CERT-In's PDF list of empanelled organisations and of its register of their
+# identifiers and validity (spreadsheet)
+preparation = ["pdfplumber>=0.10", "openpyxl>=3.1"]
 
 [project.scripts]
 certin-benchmark = "certin_benchmark.cli:main"

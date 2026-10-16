@@ -208,6 +208,25 @@ def make_staging(root: Path, epss_days: list[str] | None = None, seed: int = 7) 
                   "declared_on": "2025-12-01"},
                  {"name": "Vikram Rao 2", "qualifications": "CISA", "experience": "9 Years", "experience_years": 9.0,
                   "declared_on": "2025-12-01"}]}]}))
+    # CERT-In's register of identifiers and validity, in the form written by empanelment_register.py (invented codes,
+    # outside every real range). Two Declarations LLP is registered under a new name with its former one; Newly Listed Security LLP is
+    # in the register but not in the set.
+    reg = root / "empanelment_register"
+    reg.mkdir()
+    (reg / "register_2026-02-01.json").write_text(json.dumps({
+        "register_date": "2026-02-01",
+        "source": {"publisher": "CERT-In", "file": "synthetic", "sha256": "0" * 64, "rows": 4},
+        "organisations": [
+            {"row_no": 1, "certin_reference": "RE-2099-901", "ambak_code": "2099120001",
+             "name": "Example Assurance Pvt. Ltd.", "former_names": [], "valid_to": "2027-10-31"},
+            {"row_no": 2, "certin_reference": "D901-2099", "ambak_code": "2099120002",
+             "name": "Confidential Manpower Private Limited", "former_names": [], "valid_to": "2026-10-31"},
+            {"row_no": 3, "certin_reference": "F-2099-901", "ambak_code": "2099120003",
+             "name": "Duo Assurance LLP (Formerly Two Declarations LLP)", "former_names": ["Two Declarations LLP"],
+             "valid_to": "2028-09-30"},
+            {"row_no": 4, "certin_reference": "G-991", "ambak_code": "2099120004", "name": "Newly Listed Security LLP",
+             "former_names": [], "valid_to": "2028-09-30"}],
+        "warnings": []}))
     return root
 
 

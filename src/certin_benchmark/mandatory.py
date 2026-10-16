@@ -342,13 +342,50 @@ def mc09(ctx: Context) -> Outcome:
 
 
 # ---- MC-10 declared personnel ----------------------------------------------------------------------------
+def listed_flag(member: dict) -> bool | None:
+    """The report's own statement that a team member is listed on CERT-In's website: the column "Listed on CERT-In
+    Website (Y/N)" of the audit team table in CERT-In's report formats (auditing_team[].listed_on_certin_website)."""
+    v = member.get("listed_on_certin_website")
+    if isinstance(v, bool):
+        return v
+    s = str(v or "").strip().lower().rstrip(".")
+    if s in ("y", "yes", "true", "listed"):
+        return True
+    if s in ("n", "no", "false", "not listed"):
+        return False
+    return None
+
+
+def _listed_flags(ctx: Context) -> dict[str, tuple[str, bool]]:
+    """{normalised name: (name, flag)} for audit team members whose 'Listed on CERT-In Website' was read with
+    sufficient confidence; a flag extracted below the threshold is not read."""
+    out = {}
+    for i, m in enumerate(ctx.report.team):
+        if not m.get("name") or ctx.report.unavailable(f"auditing_team[{i}].listed_on_certin_website"):
+            continue
+        flag = listed_flag(m)
+        if flag is not None:
+            out[norm_person(m["name"])] = (m["name"], flag)
+    return out
+
+
+def _flag_notes(flags: dict[str, tuple[str, bool]]) -> list[str]:
+    """The report's own statements that members are not listed, kept where the records cannot be read."""
+    return [f"the report itself records '{name}' as not listed on CERT-In's website" for name, f in flags.values()
+            if f is False]
+
+
 def mc10(ctx: Context) -> Outcome:
     """Each signatory and audit team member is declared to CERT-In (§9.5(iii), §16.1(vi): "signed only by the
     manpower declared to CERT-In, as listed in the organization's snapshot information").
 
-    The organisation is found by identifier or, as CERT-In publishes none, by name; a name that does not
-    correspond exactly, an organisation whose snapshot lists no manpower, and a person not found by exact
-    name each return Indeterminate (Section 5), never Fail.
+    The organisation is found by the identifier the report states (an AMBAK code or CERT-In reference, through
+    CERT-In's register) or by name. The validity of its empanelment on the release date is read from CERT-In's
+    register in force on that date (Section 11.1). An identifier and a name denoting different organisations, a
+    name that does not correspond exactly, a release date after the end of validity, an organisation the register in
+    force no longer holds, an organisation whose snapshot lists no manpower, and a person not found by exact name
+    each return Indeterminate, never Fail: Section 5 allows Fail only on the reviewer's confirmation. The report's
+    own "Listed on CERT-In Website (Y/N)" is read beside the records, never in place of them.
     """
     rd = ctx.refdata
     if rd is None or not rd.available("empanelment"):
@@ -357,50 +394,140 @@ def mc10(ctx: Context) -> Outcome:
     org_name = ctx.report.get("report_meta.auditing_organization.name")
     if not ctx.present(org_id) and not ctx.present(org_name):
         return Outcome(INDETERMINATE, ["auditing organisation not identified (neither name nor empanelment identifier stated)"])
+    flags = _listed_flags(ctx)
     emp = ctx.empanelment_record()
     if emp is None:
         dated = parse_date(ctx.report.get("report_meta.report_release_date")) or ctx.report.reference_date()
         return Outcome(INDETERMINATE, ["report release date not available to select the set of records in force"
-                                       if dated is None else "no set of CERT-In empanelment records is held"])
+                                       if dated is None else "no set of CERT-In empanelment records is held"],
+                       _flag_notes(flags))
     ref = {"empanelment_set": emp.get("set_date"), "matched_by": emp.get("match"),
            "organisation": emp.get("org_name"), "declaration": emp.get("declaration")}
+    when = emp.get("date_used") or "report release date"
     notes = []
+    if when != "report release date":
+        notes.append(f"no report release date is stated; the records in force on the {when} are applied")
     if emp.get("earliest_used"):
-        notes.append(f"release date precedes the earliest set held; set of {emp['set_date']} applied")
+        notes.append(f"{when} precedes the earliest set held; set of {emp['set_date']} applied")
     label = org_name if ctx.present(org_name) else org_id
+    ident = emp.get("identifier") or {}
+    if ident:
+        ref["identifier"] = {k: ident.get(k) for k in ("stated", "kind", "status")}
+        if ident.get("status") == "not found":
+            notes.append(f"the empanelment identifier '{ident['stated']}' is not in the records held")
+        elif ident.get("status") in ("ambiguous", "not in set") and emp.get("found"):
+            notes.append(f"CERT-In's register gives the {ident['kind']} '{ident['stated']}' to "
+                         f"{'; '.join(ident.get('organisations') or [])}, "
+                         + ("more than one organisation" if ident["status"] == "ambiguous" else
+                            "not linked to one organisation of the set in force")
+                         + "; the organisation was found by name")
+    if emp.get("match") == "conflict":
+        return Outcome(INDETERMINATE, [f"the empanelment identifier '{ident.get('stated')}' denotes "
+                                       f"{' or '.join(repr(c) for c in emp['candidates'])} in the empanelment records, but "
+                                       f"the report names the organisation '{org_name}', which the records list as "
+                                       f"'{emp.get('name_denotes')}'"],
+                       notes + ["referred for human review; the identifier or the name is wrong"] + _flag_notes(flags), ref)
     if not emp.get("found"):
+        tail = _flag_notes(flags)
         if emp.get("match") == "ambiguous":
             return Outcome(INDETERMINATE, [f"'{label}' corresponds to more than one organisation in the empanelment "
-                                           f"records: {'; '.join(emp['candidates'])}"], notes, ref)
+                                           f"records: {'; '.join(emp['candidates'])}"], notes + tail, ref)
+        if ident.get("status") == "ambiguous":
+            how = "the name stated does not identify" if ctx.present(org_name) else "the report states no name to identify"
+            return Outcome(INDETERMINATE, [f"CERT-In's register gives the {ident['kind']} '{ident['stated']}' to more than "
+                                           f"one organisation ({'; '.join(ident.get('organisations') or [])}), and {how} "
+                                           "one of them"],
+                           notes + ["referred for human review"] + tail, ref)
+        if ident.get("status") == "not in set":
+            return Outcome(INDETERMINATE, [f"CERT-In's register gives the {ident['kind']} '{ident['stated']}' to "
+                                           f"{'; '.join(ident.get('organisations') or [])}, which is not linked to one "
+                                           f"organisation of the set of records in force (set {emp.get('set_date')})"],
+                           notes + ["referred for human review; the set in force may predate the organisation's listing"]
+                           + tail, ref)
         close = f"; closest names in the records: {'; '.join(emp['candidates'])}" if emp.get("candidates") else ""
         return Outcome(INDETERMINATE, [f"organisation '{label}' not found in the empanelment records "
                                        f"(set {emp.get('set_date')}){close}"],
-                       notes + ["referred for human review; the organisation may be listed under another name"], ref)
+                       notes + ["referred for human review; the organisation may be listed under another name"] + tail,
+                       ref)
+    notes.extend(emp.get("notes") or [])
+    defs: list[str] = []
+    reg = emp.get("register")
+    if reg:
+        ref.update({"register": reg.get("register_date"), "ambak_code": reg.get("ambak_code"),
+                    "certin_reference": reg.get("certin_reference"), "valid_to": reg.get("valid_to"),
+                    "validity": reg.get("validity")})
+        on = emp.get("looked_up_on")
+        if reg.get("earliest_used"):
+            notes.append(f"{when} precedes the earliest register held; register of {reg['register_date']} applied, "
+                         "which does not state from when the empanelment runs")
+        if reg.get("rows_in_register"):
+            notes.append(f"CERT-In's register of {reg['register_date']} lists the organisation {reg['rows_in_register']} "
+                         "times; its identifiers are read from the row whose code the report states (else the row valid "
+                         "longest), and its validity from the row valid longest"
+                         + (f"; the row the report cites records validity until {reg['stated_row_valid_to']}"
+                            if reg.get("stated_row_valid_to") else ""))
+        v = reg.get("validity")
+        if v == "lapsed":
+            source = reg.get("read_from") or reg["register_date"]
+            absent = (f" (the register in force, of {reg['register_date']}, does not hold the organisation)"
+                      if reg.get("read_from") else "")
+            later = reg.get("later") or []
+            renewed = (f"; a later register ({later[0]['register_date']}) records it as valid until "
+                       f"{later[0]['valid_to']}, without the date of renewal" if later else "")
+            defs.append(f"CERT-In's register of {source} records the organisation's empanelment as valid until "
+                        f"{reg['valid_to']}, before the {when} {on}{absent}{renewed}")
+        elif v == "dropped":
+            defs.append(f"the organisation is not in CERT-In's register of {reg['register_date']}, in force on the {when}, "
+                        f"though its register of {reg['read_from']} held it (valid until {reg.get('valid_to')})")
+        elif v == "not in register":
+            notes.append(f"the organisation is not in CERT-In's register of {reg['register_date']}"
+                         + (f" (first held in the register of {reg['read_from']})" if reg.get("read_from") else "")
+                         + "; the validity of its empanelment is not determined")
+        elif v == "not stated":
+            notes.append(f"CERT-In's register of {reg['register_date']} gives no validity date for the organisation")
+        if v in ("lapsed", "dropped"):
+            notes.append(f"referred for human review; Fail only on confirmation that the empanelment was not valid on "
+                         f"the {when}")
     if emp.get("declaration_after_date"):
         notes.append(f"the organisation's declaration of manpower in the records is dated {emp['declaration']}, "
-                     f"after the report release date; it is applied as the earliest held")
+                     f"after the {when}; it is applied as the earliest held")
     if not emp.get("personnel_listed"):
         stmt = f" ({emp['manpower_statement']})" if emp.get("manpower_statement") else ""
-        return Outcome(INDETERMINATE, [f"the organisation's snapshot in the empanelment records lists no technical "
-                                       f"manpower{stmt}; declaration of the signatories cannot be verified"], notes, ref)
+        return Outcome(INDETERMINATE, defs + [f"the organisation's snapshot in the empanelment records lists no technical "
+                                              f"manpower{stmt}; declaration of the signatories cannot be verified"],
+                       notes + _flag_notes(flags), ref)
     people = {norm_person(m.get("name")): m for m in ctx.report.team if m.get("name")}
     for path in ("document_control.prepared_by", "document_control.reviewed_by", "document_control.approved_by"):
         sig = ctx.report.get(path) or {}
         if sig.get("name"):
             people.setdefault(norm_person(sig["name"]), {"name": sig["name"]})
-    unmatched = []
+    unmatched = 0
     for n, m in people.items():
         hits = rd.find_person(emp, m["name"])
+        flag = flags.get(n, (None, None))[1]
         if not hits:
-            unmatched.append(m["name"])
-        elif m.get("designation") and any(h.get("designation") for h in hits) and \
+            unmatched += 1
+            if flag is False:
+                defs.append(f"'{m['name']}' is recorded in the report itself as not listed on CERT-In's website, and does "
+                            "not correspond to the empanelment records")
+            elif flag is True:
+                defs.append(f"'{m['name']}' does not correspond exactly to the empanelment records, though the report "
+                            "records the person as listed on CERT-In's website")
+            else:
+                defs.append(f"'{m['name']}' does not correspond exactly to the empanelment records")
+            continue
+        if flag is False:
+            notes.append(f"'{m['name']}' is recorded in the report as not listed on CERT-In's website, but is among the "
+                         "people declared")
+        if m.get("designation") and any(h.get("designation") for h in hits) and \
                 not any(norm_text(h.get("designation")) == norm_text(m.get("designation")) for h in hits):
             notes.append(f"'{m['name']}' declared with designation '{hits[0].get('designation')}', "
                          f"report states '{m.get('designation')}'")
     ref["persons_checked"] = len(people)
-    if unmatched:
-        return Outcome(INDETERMINATE, [f"'{n}' does not correspond exactly to the empanelment records" for n in unmatched],
-                       notes + ["referred for human review; Fail only on confirmation that the person is not declared"], ref)
+    if defs:
+        if unmatched:
+            notes.append("referred for human review; Fail only on confirmation that the person is not declared")
+        return Outcome(INDETERMINATE, defs, notes, ref)
     return Outcome(PASS, notes=notes, reference_values=ref)
 
 

@@ -129,6 +129,12 @@ class BenchmarkEngine:
             "rubric_revision": cfg.curated.rubrics.get("revision"),
         }
 
+        try:
+            organisation = ctx.auditing_organisation()
+        except Exception as exc:  # the record is still produced; MC-10 has already referred any lookup failure
+            organisation = {}
+            ctx.warnings.append(f"auditing organisation could not be identified for the record ({type(exc).__name__}: {exc})")
+
         referrals = [f"{c.id}: {'; '.join(c.deficiencies[:3])}" for c in checks if c.referred]
         incomplete: list[str] = []
         for cr in criteria:
@@ -164,6 +170,7 @@ class BenchmarkEngine:
             source=report.get("meta.source") or {},
             report_structure=report.get("meta.report_structure") or [],
             warnings=ctx.warnings,
+            auditing_organisation=organisation,
         )
 
 

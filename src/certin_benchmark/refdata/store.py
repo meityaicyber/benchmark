@@ -261,14 +261,166 @@ class ReferenceData:
     def _has_table(self, name: str) -> bool:
         return self.db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() is not None
 
-    def empanelment(self, org_id: str | None, on: _dt.date, org_name: str | None = None) -> dict | None:
-        """The records of an organisation in the set in force on the date (the latest set dated on or before
-        it, else the earliest set), found by identifier or else by name.
+    def _register_dates(self) -> list[str]:
+        if not self._has_table("empanel_register"):
+            return []
+        return [r["register_date"] for r in self.db.execute(
+            "SELECT DISTINCT register_date FROM empanel_register ORDER BY register_date")]
 
-        CERT-In publishes no identifier, so the name is the usual key: it must correspond exactly, after
-        normalisation (case, 'M/s', punctuation, legal-form words), to a name under which the organisation is
-        listed. Where the organisation's list entry holds more than one declaration of its manpower, the
-        declaration made on or before the date is applied, else the earliest.
+    def _register_rows_for_identifier(self, ident) -> tuple[str | None, list[sqlite3.Row]]:
+        """Rows of CERT-In's registers whose AMBAK code or CERT-In reference is the identifier, and which it is."""
+        from .empanelment_register import norm_ambak, norm_reference
+        code = norm_ambak(ident)
+        if code:
+            rows = self.db.execute("SELECT * FROM empanel_register WHERE ambak_code = ?", (code,)).fetchall()
+            if rows:
+                return "AMBAK code", rows
+        ref = norm_reference(ident)
+        if ref:
+            rows = self.db.execute("SELECT * FROM empanel_register WHERE certin_ref_norm = ?", (ref,)).fetchall()
+            if rows:
+                return "CERT-In reference", rows
+        return None, []
+
+    def _register_rows_for_names(self, variants: list[str]) -> list[sqlite3.Row]:
+        rows: dict[tuple, sqlite3.Row] = {}
+        for v in variants:
+            for r in self.db.execute(
+                    "SELECT r.* FROM empanel_register r JOIN empanel_register_name n "
+                    "ON n.register_date = r.register_date AND n.row_no = r.row_no WHERE n.name_norm = ?", (v,)):
+                rows[(r["register_date"], r["row_no"])] = r
+        return list(rows.values())
+
+    def _linked(self, rows: list[sqlite3.Row], set_date: str) -> set[str]:
+        ids: set[str] = set()
+        for r in rows:
+            ids |= {x["org_id"] for x in self.db.execute(
+                "SELECT org_id FROM empanel_register_link WHERE register_date = ? AND row_no = ? AND set_date = ?",
+                (r["register_date"], r["row_no"], set_date))}
+        return ids
+
+    def _distinct_organisations(self, rows: list[sqlite3.Row], set_date: str) -> int:
+        """How many organisations the rows found for one identifier denote. Within a register, rows that are neither
+        linked to the same organisation of the set nor named alike are different organisations given the same
+        identifier. Across registers the identifier is taken to stay with its organisation, unless rows are linked
+        to different organisations of the set."""
+        linked = [self._linked([r], set_date) for r in rows]
+        names = [{x["name_norm"] for x in self.db.execute(
+            "SELECT name_norm FROM empanel_register_name WHERE register_date = ? AND row_no = ?",
+            (r["register_date"], r["row_no"]))} for r in rows]
+        by_reg: dict[str, list[int]] = {}
+        for i, r in enumerate(rows):
+            by_reg.setdefault(r["register_date"], []).append(i)
+        most = 1
+        for idx in by_reg.values():
+            parent = {i: i for i in idx}
+
+            def find(i: int) -> int:
+                while parent[i] != i:
+                    parent[i] = parent[parent[i]]
+                    i = parent[i]
+                return i
+
+            for a in idx:
+                for b in idx:
+                    if a < b and ((linked[a] & linked[b]) or (names[a] & names[b])):
+                        parent[find(a)] = find(b)
+            most = max(most, len({find(i) for i in idx}))
+        return max(most, len(set().union(*linked)) if linked else 0)
+
+    def _rows_name(self, rows: list[sqlite3.Row], set_date: str, org_ids: set[str]) -> bool:
+        """Whether register rows name one of the organisations, by a name under which the set lists it."""
+        names = {r["name_norm"] for o in org_ids for r in self.db.execute(
+            "SELECT name_norm FROM empanel_org_name WHERE set_date = ? AND org_id = ?", (set_date, o))}
+        for r in rows:
+            if names & {x["name_norm"] for x in self.db.execute(
+                    "SELECT name_norm FROM empanel_register_name WHERE register_date = ? AND row_no = ?",
+                    (r["register_date"], r["row_no"]))}:
+                return True
+        return False
+
+    def _org_name(self, set_date: str, org_id: str) -> str:
+        r = self.db.execute("SELECT org_name FROM empanel_org WHERE set_date = ? AND org_id = ?", (set_date, org_id)).fetchone()
+        return (r["org_name"] if r else None) or org_id
+
+    @staticmethod
+    def _pick(rows: list[sqlite3.Row], stated) -> sqlite3.Row:
+        """Of an organisation's rows in one register, the row whose code the report states, else the row valid the
+        longest."""
+        from .empanelment_register import norm_ambak, norm_reference
+        if stated is not None and len(rows) > 1:
+            code, ref = norm_ambak(stated), norm_reference(stated)
+            matching = [r for r in rows if (code and r["ambak_code"] == code) or (ref and r["certin_ref_norm"] == ref)]
+            rows = matching or rows
+        return max(rows, key=lambda r: r["valid_to"] or "")
+
+    def _register_entry(self, set_date: str, org_id: str, d: str, registers: list[str], stated=None) -> dict:
+        """The organisation's row in the register in force on the date (the latest register dated on or before
+        it, else the earliest), with its identifiers and the validity of its empanelment on the date. Where the
+        register in force does not hold the organisation, the latest earlier register that does is read."""
+        by_reg: dict[str, list[sqlite3.Row]] = {}
+        for r in self.db.execute(
+                "SELECT r.* FROM empanel_register r JOIN empanel_register_link l ON l.register_date = r.register_date "
+                "AND l.row_no = r.row_no WHERE l.set_date = ? AND l.org_id = ? ORDER BY r.register_date, r.row_no",
+                (set_date, org_id)):
+            by_reg.setdefault(r["register_date"], []).append(r)
+        prior = [x for x in registers if x <= d]
+        in_force, earliest_used = (prior[-1], False) if prior else (registers[0], True)
+        entry: dict = {"register_date": in_force, "earliest_used": earliest_used}
+
+        def describe(row: sqlite3.Row, register: str) -> None:
+            entry.update({"ambak_code": row["ambak_code"], "certin_reference": row["certin_ref"],
+                          "valid_to": row["valid_to"], "name": row["org_name"]})
+            if register != in_force:
+                entry["read_from"] = register
+
+        def longest(rows: list[sqlite3.Row]) -> sqlite3.Row:
+            return max(rows, key=lambda r: r["valid_to"] or "")
+
+        here = by_reg.get(in_force) or []
+        if not here:
+            earlier = [x for x in sorted(by_reg) if x < in_force]
+            later = [x for x in sorted(by_reg) if x > in_force]
+            if earlier:
+                rows = by_reg[earlier[-1]]
+                describe(self._pick(rows, stated), earlier[-1])
+                entry["valid_to"] = longest(rows)["valid_to"]
+                entry["validity"] = "lapsed" if entry["valid_to"] and entry["valid_to"] < d else "dropped"
+            else:
+                entry["validity"] = "not in register"
+                if later:
+                    describe(self._pick(by_reg[later[0]], stated), later[0])
+                    entry.pop("valid_to", None)
+            return entry
+        row = self._pick(here, stated)                   # the identifiers of the row the report cites
+        describe(row, in_force)
+        best = longest(here)                             # the organisation is valid if any of its rows is
+        entry["valid_to"] = best["valid_to"]
+        if len(here) > 1:
+            entry["rows_in_register"] = len(here)
+            if row["valid_to"] != best["valid_to"]:
+                entry["stated_row_valid_to"] = row["valid_to"]
+        if not best["valid_to"]:
+            entry["validity"] = "not stated"
+        elif d <= best["valid_to"]:
+            entry["validity"] = "valid"
+        else:
+            entry["validity"] = "lapsed"
+            entry["later"] = [{"register_date": r, "valid_to": longest(by_reg[r])["valid_to"]} for r in sorted(by_reg)
+                              if r > in_force and (longest(by_reg[r])["valid_to"] or "") >= d]
+        return entry
+
+    def empanelment(self, org_id, on: _dt.date, org_name: str | None = None) -> dict | None:
+        """The records of an organisation in the set in force on the date (the latest set dated on or before
+        it, else the earliest set), with its identifiers and the validity of its empanelment from CERT-In's register
+        in force on the date (the latest register dated on or before it, else the earliest).
+
+        The organisation is found by the identifier the report states (the set's own identifier, or an AMBAK code or
+        CERT-In reference in CERT-In's register) and by name: the name must correspond exactly, after normalisation
+        (case, 'M/s', punctuation, legal-form words), to a name under which the set lists the organisation, or under
+        which CERT-In's register gives it, former names included. An identifier and a name that denote different
+        organisations return match 'conflict'. Where the organisation's list entry holds more than one declaration of
+        its manpower, the declaration made on or before the date is applied, else the earliest.
         """
         from .empanelment_pdf import org_name_variants
         sets = [r["set_date"] for r in self.db.execute("SELECT DISTINCT set_date FROM empanel_org ORDER BY set_date")]
@@ -278,39 +430,80 @@ class ReferenceData:
         prior = [x for x in sets if x <= d]
         chosen, earliest_used = (prior[-1], False) if prior else (sets[0], True)
         out = {"set_date": chosen, "earliest_used": earliest_used, "found": False, "personnel": [], "match": None,
-               "candidates": []}
-        org, match = None, None
-        if org_id:
-            org = self.db.execute("SELECT * FROM empanel_org WHERE set_date = ? AND upper(org_id) = upper(?)",
-                                  (chosen, str(org_id))).fetchone()
-            match = "identifier" if org else None
+               "candidates": [], "identifier": None, "register": None, "notes": []}
+        registers = self._register_dates()
+        if isinstance(org_id, float) and org_id.is_integer():
+            org_id = int(org_id)
+
+        # the identifier stated in the report
+        by_id, id_candidates, id_rows = None, set(), []
+        if org_id is not None and str(org_id).strip():
+            ident = str(org_id).strip()
+            info = {"stated": ident, "kind": None, "status": "not found"}
+            r = self.db.execute("SELECT org_id FROM empanel_org WHERE set_date = ? AND upper(org_id) = upper(?)",
+                                (chosen, ident)).fetchone()
+            if r:
+                by_id = r["org_id"]
+                info.update({"kind": "identifier", "status": "found"})
+            elif registers:
+                kind, id_rows = self._register_rows_for_identifier(org_id)
+                if id_rows:
+                    info["kind"] = kind
+                    info["organisations"] = sorted({x["org_name"] for x in id_rows})
+                    id_candidates = self._linked(id_rows, chosen)
+                    if self._distinct_organisations(id_rows, chosen) > 1 or len(id_candidates) > 1:
+                        info["status"] = "ambiguous"     # CERT-In's register gives it to more than one organisation
+                    elif id_candidates:
+                        by_id = next(iter(id_candidates))
+                        info["status"] = "found"
+                    else:
+                        info["status"] = "not in set"
+            out["identifier"] = info
+
+        # the name stated in the report
+        by_name, name_match, name_ids = None, None, set()
         variants = org_name_variants(org_name) if org_name else []
-        if org is None and variants and self._has_table("empanel_org_name"):
-            ids = set()
+        if variants and self._has_table("empanel_org_name"):
             for v in variants:
-                ids |= {r["org_id"] for r in self.db.execute(
+                name_ids |= {r["org_id"] for r in self.db.execute(
                     "SELECT DISTINCT org_id FROM empanel_org_name WHERE set_date = ? AND name_norm = ?", (chosen, v))}
-            if len(ids) == 1:
-                org = self.db.execute("SELECT * FROM empanel_org WHERE set_date = ? AND org_id = ?",
-                                      (chosen, ids.pop())).fetchone()
-                match = "name"
-            elif len(ids) > 1:
-                out["candidates"] = sorted(r["org_name"] for r in self.db.execute(
-                    f"SELECT org_name FROM empanel_org WHERE set_date = ? AND org_id IN ({','.join('?' * len(ids))})",
-                    (chosen, *sorted(ids))))
+            if len(name_ids) == 1:
+                by_name, name_match = next(iter(name_ids)), "name"
+            elif not name_ids and registers:
+                name_ids = self._linked(self._register_rows_for_names(variants), chosen)
+                if len(name_ids) == 1:
+                    by_name, name_match = next(iter(name_ids)), "name, through CERT-In's register"
+
+        # an identifier and a name denoting different organisations
+        id_set = id_candidates | ({by_id} if by_id else set())
+        if name_ids and (id_set or id_rows) and not (id_set & name_ids) and \
+                not (id_rows and self._rows_name(id_rows, chosen, name_ids)):
+            out["match"] = "conflict"
+            out["candidates"] = (sorted(self._org_name(chosen, x) for x in id_set) if id_set
+                                 else (out["identifier"] or {}).get("organisations", []))
+            out["name_denotes"] = "; ".join(sorted(self._org_name(chosen, x) for x in name_ids))
+            return out
+        if by_id:
+            oid, match = by_id, out["identifier"]["kind"]
+            if variants and not name_ids:
+                out["notes"].append(f"the name stated in the report, '{org_name}', does not correspond exactly to the "
+                                    "names under which the records list the organisation")
+        elif by_name:
+            oid, match = by_name, name_match
+        else:
+            if len(name_ids) > 1:
+                out["candidates"] = sorted(self._org_name(chosen, x) for x in name_ids)
                 out["match"] = "ambiguous"
                 return out
-        if org is None:
             if variants and self._has_table("empanel_org_name"):
                 import difflib
                 names = {r["name_norm"]: r["org_id"] for r in self.db.execute(
                     "SELECT name_norm, org_id FROM empanel_org_name WHERE set_date = ?", (chosen,))}
                 close = difflib.get_close_matches(variants[0], list(names), n=3, cutoff=0.75)
                 ids = list(dict.fromkeys(names[c] for c in close))
-                out["candidates"] = [r["org_name"] for i in ids for r in self.db.execute(
-                    "SELECT org_name FROM empanel_org WHERE set_date = ? AND org_id = ?", (chosen, i))]
+                out["candidates"] = [self._org_name(chosen, i) for i in ids]
             return out
-        org = dict(org)
+        org = dict(self.db.execute("SELECT * FROM empanel_org WHERE set_date = ? AND org_id = ?", (chosen, oid)).fetchone())
         people = [dict(r) for r in self.db.execute(
             "SELECT * FROM empanel_person WHERE set_date = ? AND org_id = ?", (chosen, org["org_id"]))]
         declarations = sorted({p.get("declared_on") for p in people if p.get("declared_on")})
@@ -328,6 +521,8 @@ class ReferenceData:
                     "declaration_after_date": bool(declaration and declaration > d),
                     "personnel_listed": bool(people) if listed is None else bool(listed),
                     "manpower_statement": org.get("manpower_statement"), "personnel": people})
+        if registers:
+            out["register"] = self._register_entry(chosen, org["org_id"], d, registers, org_id)
         return out
 
     def find_person(self, emp: dict, name: str) -> list[dict]:
