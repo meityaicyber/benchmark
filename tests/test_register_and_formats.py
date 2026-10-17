@@ -7,8 +7,10 @@ import copy
 import datetime as dt
 import io
 import json
+import re
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from helpers import EVAL_DATE, ROOT, check, criterion, evaluate, package, refdata, sample
@@ -28,9 +30,25 @@ except ImportError:  # the converter runs on the preparation host only
 HEADINGS = ["S.No. ", "Code(Reference)", "AMBAK Code (Primary)", "Organisation Name", "Empanelment Validity"]
 
 
-def write_sheet(path: Path, rows=None, headings=HEADINGS, merge=None) -> Path:
+def stamp_saved(path: Path, when: dt.datetime) -> None:
+    """Record `when` (UTC) as the time the workbook was last saved. openpyxl writes the time of saving itself, so the
+    date the converter reads would otherwise be the day the tests run."""
+    with zipfile.ZipFile(path) as z:
+        parts = [(info, z.read(info.filename)) for info in z.infolist()]
+    stamp = when.strftime("%Y-%m-%dT%H:%M:%SZ").encode()
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for info, data in parts:
+            if info.filename == "docProps/core.xml":
+                data, n = re.subn(rb"(<dcterms:modified\b[^>]*>)[^<]*(</dcterms:modified>)",
+                                  lambda m: m.group(1) + stamp + m.group(2), data)
+                assert n == 1, "no modified date in the workbook's core properties"
+            z.writestr(info, data)
+
+
+def write_sheet(path: Path, rows=None, headings=HEADINGS, merge=None,
+                saved=dt.datetime(2026, 10, 16, 6, 59)) -> Path:
     """A spreadsheet in the layout of CERT-In's register: dates as dates, one as text, a shared reference and a code
-    of another form."""
+    of another form, last saved at `saved` (UTC)."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.append(headings)
@@ -44,8 +62,8 @@ def write_sheet(path: Path, rows=None, headings=HEADINGS, merge=None) -> Path:
         ws.append(r)
     for rng in merge or []:
         ws.merge_cells(rng)
-    wb.properties.modified = dt.datetime(2026, 10, 16, 6, 59)
     wb.save(path)
+    stamp_saved(path, saved)
     return path
 
 
@@ -68,6 +86,15 @@ class RegisterConverter(unittest.TestCase):
         warnings = " | ".join(data["warnings"])
         self.assertIn("CERT-In reference RE-2099-91 is given to 2 rows", warnings)
         self.assertIn("AMBAK code 2099009901 of Epsilon Cyber Group does not have the form", warnings)
+
+    def test_register_dated_in_india(self):
+        tmp = Path(tempfile.mkdtemp())
+        for saved, date in ((dt.datetime(2026, 10, 15, 20, 0), "2026-10-16"),     # 01:30 IST on 16 October
+                            (dt.datetime(2026, 10, 16, 18, 29), "2026-10-16"),    # 23:59 IST
+                            (dt.datetime(2026, 10, 16, 18, 30), "2026-10-17")):   # midnight IST
+            data = er.read_register(write_sheet(tmp / f"saved_{saved:%d%H%M}.xlsx", saved=saved))
+            self.assertEqual((data["register_date"], data["source"]["document_date"]), (date, date), saved)
+        self.assertEqual(er.read_register(tmp / "saved_152000.xlsx", "2026-10-20")["register_date"], "2026-10-20")
 
     def test_other_layouts_and_cells(self):
         tmp = Path(tempfile.mkdtemp())

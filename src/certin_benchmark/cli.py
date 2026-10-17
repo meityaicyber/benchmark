@@ -235,7 +235,8 @@ def build_parser() -> argparse.ArgumentParser:
                                                  "empanelment (spreadsheet)")
     cr.add_argument("xlsx")
     cr.add_argument("--staging", required=True)
-    cr.add_argument("--register-date", help="date on which the register was received (default: the spreadsheet's date)")
+    cr.add_argument("--register-date", help="date on which the register was received (default: the day the "
+                                         "spreadsheet was last saved, in IST)")
     k = rs.add_parser("keygen")
     k.add_argument("--private", required=True)
     k.add_argument("--public", required=True)

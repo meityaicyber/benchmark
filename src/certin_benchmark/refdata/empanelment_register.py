@@ -41,6 +41,9 @@ from pathlib import Path
 
 from .empanelment_pdf import norm_org, org_name_variants
 
+# India Standard Time, in which a register without --register-date is dated by the time it was last saved
+IST_OFFSET = _dt.timedelta(hours=5, minutes=30)
+
 # Column headings, matched case-insensitively against each cell of the heading row (first field that matches)
 HEADINGS = {
     "serial": r"^(s\.?\s*no|sr\.?\s*no|sl\.?\s*no|serial)\b",
@@ -223,7 +226,10 @@ def read_register(path: str | Path, register_date: str | None = None) -> dict:
     try:
         props = wb.properties
         modified = props.modified or props.created
-        document_date = modified.date().isoformat() if modified else None
+        # The workbook records when it was last saved in UTC. The register is dated in India Standard Time, as the
+        # list's PDF is dated by its own local date, so that a sheet saved between midnight and 05:30 IST keeps that
+        # day's date.
+        document_date = (modified + IST_OFFSET).date().isoformat() if modified else None
         found = None
         others = []
         for ws in wb.worksheets:
