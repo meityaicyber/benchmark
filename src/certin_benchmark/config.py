@@ -3,7 +3,8 @@
 The Suite parameters (weights, cap, thresholds, tolerances) live in config/suite.yaml.
 The curated lists (frameworks, designations, engagement and module definitions, regulatory
 lists, rubric anchors) are part of the Reference Data Package (Section 11.1); for development
-they are read from the repository's curated/ directory.
+they are read from the repository's curated/ directory. An installed Suite reads the copies of
+both that the wheel carries inside the package (setup.py).
 """
 
 from __future__ import annotations
@@ -17,9 +18,16 @@ from typing import Any
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SUITE_CONFIG = REPO_ROOT / "config" / "suite.yaml"
-DEFAULT_CURATED_DIR = REPO_ROOT / "curated"
+PACKAGE_DIR = Path(__file__).resolve().parent
+REPO_ROOT = PACKAGE_DIR.parents[1]
+# An installed Suite reads the copies of config/ and curated/ that setup.py places inside the package, under
+# bundled/, when the wheel is built; setup.py never writes them into the source tree. A source checkout, or an
+# editable install of one, has no bundled/ and reads the repository's own files.
+BUNDLED_DIR = PACKAGE_DIR / "bundled"
+IN_CHECKOUT = (not BUNDLED_DIR.is_dir() and PACKAGE_DIR.parent.name == "src"
+               and (REPO_ROOT / "pyproject.toml").is_file())
+DEFAULT_SUITE_CONFIG = (REPO_ROOT / "config" if IN_CHECKOUT else BUNDLED_DIR / "config") / "suite.yaml"
+DEFAULT_CURATED_DIR = REPO_ROOT / "curated" if IN_CHECKOUT else BUNDLED_DIR / "curated"
 
 CURATED_FILES = ("frameworks", "personnel", "engagements", "modules", "regulatory", "tools", "rubrics", "report_formats")
 
@@ -175,6 +183,9 @@ class SuiteConfig:
 
 def load_curated(curated_dir: str | Path | None = None) -> Curated:
     d = Path(curated_dir) if curated_dir else DEFAULT_CURATED_DIR
+    if not d.is_dir():
+        # a single list may be absent (it then reads as empty), but a missing folder would empty every list unnoticed
+        raise FileNotFoundError(f"curated lists not found: {d} is not a directory (pass --curated <folder>)")
     data = {}
     for name in CURATED_FILES:
         p = d / f"{name}.yaml"
@@ -185,6 +196,8 @@ def load_curated(curated_dir: str | Path | None = None) -> Curated:
 def load_config(suite_path: str | Path | None = None, curated_dir: str | Path | None = None,
                 overrides: dict | None = None) -> SuiteConfig:
     p = Path(suite_path) if suite_path else DEFAULT_SUITE_CONFIG
+    if not p.is_file():
+        raise FileNotFoundError(f"Suite configuration not found: {p} (pass --config <suite.yaml>)")
     raw = _load_yaml(p)
     if overrides:
         raw = _deep_merge(raw, overrides)

@@ -752,6 +752,9 @@ def _overlap(a, b) -> float:
 
 
 def convert(pdf_path: str | Path, set_date: str | None = None, log=print, events=None) -> dict:
+    if set_date is not None and not (re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(set_date)) and _valid_date(str(set_date))):
+        from ..errors import OperatorError
+        raise OperatorError(f"set date {set_date!r} is not a date of the form YYYY-MM-DD")
     pdf_path = Path(pdf_path)
     data = pdf_path.read_bytes()
     meta, n_pages, events = events if events is not None else read_events(pdf_path, log)
@@ -1001,6 +1004,14 @@ def _ranges(values: list[int]) -> str:
 
 def _iso(value) -> bool:
     return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value or "")))
+
+
+def _valid_date(value: str) -> bool:
+    try:
+        _dt.date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _pdf_date(value) -> str | None:

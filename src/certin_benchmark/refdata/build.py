@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Iterator
 
 from .. import cvss_calc
+from ..errors import OperatorError
 from ..util import norm_person
 from .nvdrecord import nvd_cwes, nvd_metrics
 
@@ -80,11 +81,18 @@ class PackageBuilder:
         self.package_id = f"RDP-{self.prepared_on.isoformat()}"
         self.out = Path(out_root) / self.package_id
         self.previous = Path(previous) if previous else None
+        if self.previous and not (self.previous / "manifest.json").is_file():
+            raise OperatorError(f"previous package {self.previous} is not a Reference Data Package: it has no "
+                                "manifest.json")
         self.prev_manifest = json.loads((self.previous / "manifest.json").read_text()) if self.previous else {}
         self.link_epss = link_epss
         self.log = log
         # sources whose record count may move outside the expected range of the previous package, on the
         # operator's decision (for example the first real list of empanelled organisations after test records)
+        unknown = sorted(set(accept_changes) - set(SOURCES))
+        if unknown:
+            raise OperatorError(f"accept-change: no source named {', '.join(unknown)}; the sources are "
+                                f"{', '.join(SOURCES)}")
         self.accept_changes = set(accept_changes)
         self.manifest: dict = {"package_id": self.package_id, "prepared_on": self.prepared_on.isoformat(),
                                "prepared_at": _now(), "previous_package": self.prev_manifest.get("package_id"),
@@ -92,13 +100,76 @@ class PackageBuilder:
 
     # ---- orchestration -------------------------------------------------------------
     def build(self) -> Path:
-        if self.out.exists():
-            raise FileExistsError(f"{self.out} exists; a package is never overwritten")
+        final = self.out
+        if final.exists():
+            raise FileExistsError(f"{final} exists; a package is never overwritten")
+        self._check_staged_history()
         # Section 11.4: the CVSS library is validated against reference vectors before preparation
         validation = cvss_calc.validate_library(cvss_calc.DEFAULT_VECTORS)
         if not validation["passed"]:
             raise RuntimeError(f"CVSS library failed validation: {validation['failures'][:3]}")
         self.manifest["cvss_library_validation"] = {k: validation[k] for k in ("library", "cases", "passed")}
+        # The package is assembled in a hidden folder beside its place and renamed into it once complete, so that a
+        # build that stops part-way leaves nothing behind, and nothing that could be taken for a package.
+        # A build killed outright leaves its hidden folder, which the next build of that date removes.
+        partial = final.with_name(f".{final.name}.partial")
+        if partial.exists():
+            shutil.rmtree(partial)
+        self.out = partial
+        try:
+            self._assemble()
+            if final.exists():
+                raise FileExistsError(f"{final} appeared while this package was built; a package is never overwritten")
+            os.rename(partial, final)
+        except BaseException:
+            db = getattr(self, "db", None)
+            if db is not None:
+                try:
+                    db.close()
+                except sqlite3.Error:
+                    pass
+            shutil.rmtree(partial, ignore_errors=True)
+            raise
+        finally:
+            self.out = final
+        self.log(f"built {final}")
+        # Section 11.4: every preparation is logged
+        log = final.parent / "preparation_log.jsonl"
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"package_id": self.package_id, "prepared_at": self.manifest["prepared_at"],
+                                 "previous": self.manifest["previous_package"],
+                                 "sources": {k: v.get("status") for k, v in self.manifest["sources"].items()},
+                                 "host": os.uname().nodename if hasattr(os, "uname") else ""}) + "\n")
+        return final
+
+    def _check_staged_history(self) -> None:
+        """NVD history read from a date onwards (fetch --history-since, or --previous) only continues the previous
+        package's history. Built without that package, or starting after the mirror commit it read, the package
+        would lose NVD's earlier values, or the changes of the days between, and nothing would show it."""
+        from .fetch import utc_date
+        d = self.staging / "nvd_history"
+        src = d / "SOURCE.json"
+        if (d / "nvd_states.jsonl.gz").exists() and not src.exists():
+            raise OperatorError(f"{d} holds NVD history without its SOURCE.json, so the window it covers is not known; "
+                                "fetch it again")
+        since = json.loads(src.read_text()).get("since") if src.exists() else None
+        if not since:
+            return
+        if not self.previous:
+            raise OperatorError(f"the NVD history staged in {d} was read from {since} only; build with --previous, "
+                                "naming the package it continues")
+        prev = (self.prev_manifest.get("sources") or {}).get("nvd_history") or {}
+        read_to = prev.get("publisher_version") if prev.get("status") in ("included", "carried_forward") else None
+        if not read_to:
+            raise OperatorError(f"the NVD history staged in {d} was read from {since} only, but "
+                                f"{self.prev_manifest.get('package_id')} holds no NVD history for it to continue; fetch "
+                                "the whole history (leave out --history-since)")
+        if _dt.date.fromisoformat(str(since)[:10]) > utc_date(read_to):
+            raise OperatorError(f"the NVD history staged in {d} starts on {since}, after {utc_date(read_to)} (UTC), "
+                                f"the last mirror commit {self.prev_manifest.get('package_id')} read, so the days "
+                                "between would be missing; fetch again with --previous")
+
+    def _assemble(self) -> None:
         (self.out / "originals").mkdir(parents=True)
         self.db = sqlite3.connect(self.out / "reference.sqlite")
         self.db.executescript(SCHEMA.read_text())
@@ -122,15 +193,6 @@ class PackageBuilder:
             "".join(v["sha256"] for k, v in sorted(self.manifest["files"].items()) if k.startswith("curated/")).encode()
         ).hexdigest()
         (self.out / "manifest.json").write_text(json.dumps(self.manifest, indent=2, sort_keys=True))
-        self.log(f"built {self.out}")
-        # Section 11.4: every preparation is logged
-        log = self.out.parent / "preparation_log.jsonl"
-        with open(log, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"package_id": self.package_id, "prepared_at": self.manifest["prepared_at"],
-                                 "previous": self.manifest["previous_package"],
-                                 "sources": {k: v.get("status") for k, v in self.manifest["sources"].items()},
-                                 "host": os.uname().nodename if hasattr(os, "uname") else ""}) + "\n")
-        return self.out
 
     def _run_source(self, name: str, fn: Callable[[], dict]) -> None:
         src_dir = self.staging / ("cvelist" if name == "cve_list" else name)
@@ -202,15 +264,16 @@ class PackageBuilder:
         if name == "epss":
             return  # the EPSS archive itself is the original
         dest = self.out / "originals" / name
+        # Hidden files (a download's temporary .part file, left by an interrupted fetch) are not originals
         if name == "cve_list":
             # A cloned tree of CVE records is not copied: every record is retained in publisher_record.
             # The bulk archive (if staged instead) and SOURCE.json, naming the commit, are kept.
             dest.mkdir(parents=True)
             for f in sorted(src_dir.iterdir()):
-                if f.is_file():
+                if f.is_file() and not f.name.startswith("."):
                     shutil.copy2(f, dest / f.name)
         else:
-            shutil.copytree(src_dir, dest, ignore=shutil.ignore_patterns(".git"))
+            shutil.copytree(src_dir, dest, ignore=shutil.ignore_patterns(".*"))
         for p in sorted(dest.rglob("*")):
             if p.is_file():
                 entry["files"].append({"path": str(p.relative_to(self.out)), "sha256": sha256_file(p)})
@@ -428,6 +491,17 @@ class PackageBuilder:
                 modified = r.get("last_modified") or ""
                 if not modified:
                     continue
+                if r.get("absent_at_window_start"):
+                    # History read from a date: the record opens the window without a value of this version. That
+                    # ends a value only where the earlier packages held one (their rows, carried into this one; not
+                    # the feed rows this build has just added); otherwise there is nothing to record.
+                    held = self.db.execute(
+                        "SELECT score FROM nvd_cvss WHERE cve_id = ? AND version = ? "
+                        "AND coalesce(valid_from, package_date) <= ? AND (source = 'history' OR package_date < ?) "
+                        "ORDER BY coalesce(valid_from, package_date) DESC, source = 'feed' DESC, package_date DESC "
+                        "LIMIT 1", (cid, version, modified[:10], self.prepared_on.isoformat())).fetchone()
+                    if not held or held[0] is None:
+                        continue
                 rows.append((cid, version, r.get("score"), r.get("vector"), modified[:10]))
                 final[(cid, version)] = (modified, r.get("score"), r.get("vector"))
         current = getattr(self, "_nvd_current", None)
@@ -577,8 +651,15 @@ class PackageBuilder:
         items = data.get("advisories", data) if isinstance(data, dict) else data
         for a in items:
             aid = str(a["id"]).strip().upper()
+            issued = str(a.get("issued_on") or "")
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", issued[:10]):
+                raise SourceError(f"advisory {aid}: issued_on {a.get('issued_on')!r} is not a date of the form YYYY-MM-DD")
+            try:
+                _dt.date.fromisoformat(issued[:10])
+            except ValueError as exc:
+                raise SourceError(f"advisory {aid}: issued_on {issued[:10]}: {exc}") from None
             self.db.execute("INSERT OR REPLACE INTO advisory VALUES (?, ?, ?, ?)",
-                            (aid, str(a["issued_on"])[:10], a.get("title"), a.get("kind", "advisory")))
+                            (aid, issued[:10], a.get("title"), a.get("kind", "advisory")))
             for c in a.get("cves", []):
                 self.db.execute("INSERT INTO advisory_cve VALUES (?, ?)", (aid, str(c).strip().upper()))
             for prod in a.get("products", []):

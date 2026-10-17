@@ -6,6 +6,7 @@ import argparse
 import csv
 import datetime as _dt
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -16,13 +17,37 @@ def _date(s: str | None) -> _dt.date | None:
     return _dt.date.fromisoformat(s) if s else None
 
 
+def _iso_date(s: str) -> str:
+    """Type of the date options: a date of the form YYYY-MM-DD, kept as given. A wrong date is reported by argparse
+    with the option's name, before the command starts."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        raise argparse.ArgumentTypeError(f"{s!r} is not a date of the form YYYY-MM-DD")
+    try:
+        _dt.date.fromisoformat(s)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{s}: {exc}") from None
+    return s
+
+
 def cmd_evaluate(a: argparse.Namespace) -> int:
     from .engine import BenchmarkEngine
     from .evaluators import RecordingBackend, ReplayBackend, backend_from_config
     from .refdata.package import latest_package
     from .refdata.store import ReferenceData
 
-    rd_path = a.rdp or (latest_package(a.rdp_store) if a.rdp_store else None)
+    from .errors import OperatorError
+    # A package named but not found stops the run: evaluating without reference data would only be noted as a warning
+    if a.rdp:
+        rd_path = Path(a.rdp)
+    elif a.rdp_store:
+        rd_path = latest_package(a.rdp_store)
+        if rd_path is None:
+            raise OperatorError(f"no Reference Data Package in {a.rdp_store}: the store holds no RDP-<date> folder "
+                                "with a manifest")
+    else:
+        rd_path = None
+    if rd_path is not None and not (Path(rd_path) / "manifest.json").is_file():
+        raise OperatorError(f"{rd_path} is not a Reference Data Package: it has no manifest.json")
     refdata = ReferenceData(rd_path) if rd_path else None
     curated = a.curated or (refdata.curated_dir if refdata is not None and refdata.curated_dir.exists() else None)
     cfg = load_config(a.config, curated)
@@ -121,7 +146,8 @@ def cmd_rdp(a: argparse.Namespace) -> int:
         for w in data["warnings"]:
             print(f"  warning: {w}", file=sys.stderr)
     elif a.rdp_cmd == "keygen":
-        pkg.generate_keypair(a.private, a.public)
+        for note in pkg.generate_keypair(a.private, a.public):
+            print(f"warning: {note}", file=sys.stderr)
     elif a.rdp_cmd == "sign":
         print(pkg.sign_package(a.package, a.key))
     elif a.rdp_cmd == "verify":
@@ -134,19 +160,34 @@ def cmd_rdp(a: argparse.Namespace) -> int:
         from .refdata import fetch
         st = Path(a.staging)
         today = _dt.date.today()
+        # Everything that can be wrong in the arguments is checked before the first download, not hours later
+        window = fetch.previous_window(a.previous) if a.previous else None
+        if a.epss_from:
+            start = _date(a.epss_from)
+        elif window:
+            start = window["epss_from"] or fetch.EPSS_FIRST_DAY    # no EPSS in the previous package: the whole archive
+        else:
+            start = today - _dt.timedelta(days=a.epss_days)
+        if a.history_since:
+            since = _date(a.history_since)
+        else:
+            since = window["history_since"] if window else None    # no history in the previous package: all of it
+        releases = _cwe_releases(a.cwe_releases) if a.cwe_releases else None
+        if window:
+            print(f"after {window['package_id']}: EPSS from {start}; NVD history "
+                  + ("not fetched" if a.no_history else f"since {since}" if since else "read in full"), file=sys.stderr)
+        days = [start + _dt.timedelta(days=i) for i in range((today - start).days)]
         fetch.fetch_nvd(st)
         fetch.fetch_kev(st)
         fetch.fetch_cvelist(st)
-        start = _date(a.epss_from) if a.epss_from else today - _dt.timedelta(days=a.epss_days)
-        days = [start + _dt.timedelta(days=i) for i in range((today - start).days)]
         fetch.fetch_epss(st, days)
-        if not a.cwe_releases:
+        if releases is None:
             print("warning: no --cwe-releases given; stage every CWE release since the earliest reference date needed",
                   file=sys.stderr)
         if not a.no_history:
-            fetch.fetch_nvd_history(st, Path(a.nvd_mirror), _date(a.history_since))
-        if a.cwe_releases:
-            fetch.fetch_cwe(st, json.loads(Path(a.cwe_releases).read_text()))
+            fetch.fetch_nvd_history(st, Path(a.nvd_mirror), since)
+        if releases is not None:
+            fetch.fetch_cwe(st, releases)
         print(f"staged in {st}; add CERT-In advisories, and the list of empanelled organisations and the register "
               "of their identifiers and validity received from CERT-In (convert-empanelment, convert-register)")
     return 0
@@ -187,6 +228,34 @@ def cmd_calibrate(a: argparse.Namespace) -> int:
     return 0
 
 
+def _source_names() -> tuple[str, ...]:
+    from .refdata.build import SOURCES
+    return SOURCES
+
+
+def _cwe_releases(path: str) -> list[dict]:
+    """The CWE release list: a JSON list of {"version": "4.20", "release_date": "2026-04-30"}, versions as text."""
+    from .errors import OperatorError
+    try:
+        releases = json.loads(Path(path).read_text())
+    except json.JSONDecodeError as exc:
+        raise OperatorError(f"{path} is not JSON: {exc}") from None
+    if not isinstance(releases, list) or not releases:
+        raise OperatorError(f"{path}: expected a JSON list of {{\"version\", \"release_date\"}}")
+    for r in releases:
+        version, date = (r.get("version"), r.get("release_date")) if isinstance(r, dict) else (None, None)
+        if not (isinstance(version, str) and re.fullmatch(r"\d+\.\d+(\.\d+)?", version)):
+            raise OperatorError(f"{path}: version {version!r} is not text such as \"4.20\" (a number would turn "
+                                "4.10 into 4.1)")
+        if not (isinstance(date, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date)):
+            raise OperatorError(f"{path}: release_date {date!r} of version {version} is not of the form YYYY-MM-DD")
+        try:
+            _dt.date.fromisoformat(date)
+        except ValueError as exc:
+            raise OperatorError(f"{path}: release_date {date} of version {version}: {exc}") from None
+    return releases
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="certin-benchmark", description="Cybersecurity Audit Report Benchmarking Suite")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -206,7 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--no-models", action="store_true", help="run without language or vision models")
     e.add_argument("--replay", help="recompute from recorded model responses")
     e.add_argument("--record-responses", help="write model responses for later replay")
-    e.add_argument("--evaluated-on", help="evaluation date (YYYY-MM-DD) for the package age")
+    e.add_argument("--evaluated-on", type=_iso_date, help="evaluation date (YYYY-MM-DD) for the package age")
     e.add_argument("--out", help="output file, or directory when several reports are given")
     e.set_defaults(fn=cmd_evaluate)
 
@@ -221,22 +290,23 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--curated")
     b.add_argument("--out-root", required=True)
     b.add_argument("--previous")
-    b.add_argument("--date")
-    b.add_argument("--accept-change", action="append", metavar="SOURCE",
+    b.add_argument("--date", type=_iso_date)
+    b.add_argument("--accept-change", action="append", metavar="SOURCE", choices=_source_names(),
                    help="accept a record count outside the expected range of the previous package for this source "
                         "(recorded in the manifest), e.g. empanelment for the first real list after test records")
     ce = rs.add_parser("convert-empanelment", help="preparation host only: convert CERT-In's list of empanelled "
                                                     "auditing organisations (PDF) into an empanelment set")
     ce.add_argument("pdf")
     ce.add_argument("--staging", required=True)
-    ce.add_argument("--set-date", help="date on which the list was received (default: the document's date)")
+    ce.add_argument("--set-date", type=_iso_date, help="date on which the list was received (default: the document's "
+                                                        "date)")
     cr = rs.add_parser("convert-register", help="preparation host only: convert CERT-In's register of the empanelled "
                                                  "organisations' AMBAK codes, CERT-In references and validity of "
                                                  "empanelment (spreadsheet)")
     cr.add_argument("xlsx")
     cr.add_argument("--staging", required=True)
-    cr.add_argument("--register-date", help="date on which the register was received (default: the day the "
-                                         "spreadsheet was last saved, in IST)")
+    cr.add_argument("--register-date", type=_iso_date, help="date on which the register was received (default: the "
+                                                             "day the spreadsheet was last saved, in IST)")
     k = rs.add_parser("keygen")
     k.add_argument("--private", required=True)
     k.add_argument("--public", required=True)
@@ -252,12 +322,18 @@ def build_parser() -> argparse.ArgumentParser:
     im.add_argument("--key", required=True)
     f = rs.add_parser("fetch", help="preparation host only: download every source as a complete dataset (no query APIs)")
     f.add_argument("--staging", required=True)
-    f.add_argument("--epss-days", type=int, default=7, help="days of EPSS files to add since the previous package")
-    f.add_argument("--epss-from", help="first EPSS day to fetch; 2021-04-14 for the complete archive on a first package")
+    f.add_argument("--previous", help="the previous package: EPSS starts the day after its last day, and NVD history "
+                                      "the day before its mirror commit (unless --epss-from or --history-since say "
+                                      "otherwise)")
+    f.add_argument("--epss-days", type=int, default=7, help="days of EPSS files to fetch, ending yesterday, when "
+                                                             "neither --epss-from nor --previous is given")
+    f.add_argument("--epss-from", type=_iso_date,
+                   help="first EPSS day to fetch; 2021-04-14 for the complete archive on a first package")
     f.add_argument("--nvd-mirror", default="nvd-mirror",
                    help="local clone of the NVD mirror (full git history), created on first use and updated after")
-    f.add_argument("--history-since", help="read only the mirror's synchronisations since this date; give the "
-                                           "previous package's date when building on a previous package")
+    f.add_argument("--history-since", type=_iso_date,
+                   help="read only the mirror's synchronisations from this date (midnight UTC); "
+                                           "--previous chooses it for a later package. Never on a first package")
     f.add_argument("--no-history", action="store_true", help="do not stage NVD history (the previous package's is carried)")
     f.add_argument("--cwe-releases", help="JSON list of {version, release_date}")
     r.set_defaults(fn=cmd_rdp)
@@ -284,8 +360,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .errors import OperatorError
     a = build_parser().parse_args(argv)
-    return a.fn(a)
+    try:
+        return a.fn(a)
+    except (OperatorError, FileNotFoundError, FileExistsError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

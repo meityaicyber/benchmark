@@ -1,0 +1,4 @@
+# A source distribution carries what the wheel build bundles into the package (setup.py)
+graft config
+graft curated
+global-exclude __pycache__ *.pyc

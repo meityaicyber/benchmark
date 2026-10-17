@@ -21,19 +21,26 @@ For each report the Suite returns a compliance status (Compliant, Non-compliant 
 | `src/certin_benchmark/calibration/` | Agreement measures, reference set split, weight and threshold fitting (Section 8) |
 | `config/suite.yaml` | Weights, cap, thresholds, tolerances, sampling and model settings |
 | `curated/` | Curated reference lists transferred inside each Reference Data Package (Section 11.1) |
-| `tests/` | 169 tests, including an end-to-end run on a sample report, a synthetic signed package, and a synthetic list and register in the layout of CERT-In's |
+| `tests/` | 193 tests, including an end-to-end run on a sample report, a synthetic signed package, and a synthetic list and register in the layout of CERT-In's |
 | `docs/VALIDATION.md` | Check of every external fact against the publishers' sites (12, 13 and 16 October 2026) and of the CERT-In documents supplied in October 2026 |
 | `docs/REPORT_FORMATS.md` | CERT-In's two audit report formats mapped to the master schema and the Suite's checks, with the fields the schema lacks |
 | `tools/` | Scripts that re-validate the CVSS reference vectors against the specification and FIRST's calculator |
+| `setup.py`, `MANIFEST.in` | Build hook that places a copy of `config/` and `curated/` inside the wheel, for an installed Suite |
 
 ## Installation
 
-Python 3.10 or later. Runtime dependencies are PyYAML, `cvss` (the open-source CVSS v3.1 and v4.0 calculator) and `cryptography` (Ed25519 signing). The preparation host also needs `pdfplumber` to convert CERT-In's list of empanelled organisations and `openpyxl` to read its register of their identifiers and validity (`pip install .[preparation]`); neither is needed inside the environment. Inside the CERT-In environment, install from wheels transferred with the code:
+Python 3.10 or later. Runtime dependencies are PyYAML, `cvss` (the open-source CVSS v3.1 and v4.0 calculator) and `cryptography` (Ed25519 signing). The preparation host also needs `pdfplumber` to convert CERT-In's list of empanelled organisations and `openpyxl` to read its register of their identifiers and validity (`pip install -e ".[preparation]"`); neither is needed inside the environment.
+
+A source checkout, or an editable install of one (`pip install -e`), reads `config/suite.yaml` and `curated/` from the repository. A wheel carries a copy of both inside the package (`setup.py`), so an installed Suite finds them without the source tree; `--config` and `--curated` override either, and a configuration or list folder that cannot be found stops the command with an error naming the option to use. Inside the CERT-In environment, install from wheels built on a connected host with the same operating system, processor architecture and Python version as the environment:
 
 ```
-pip download -d wheels .            # on a connected host
-pip install --no-index --find-links wheels .   # inside the environment
+pip wheel -w wheels .                                         # on the connected host, in the repository
+pip install --no-index --find-links wheels certin-benchmark   # inside the environment
 ```
+
+pip keeps an installed copy of the same version, so an update built from later code at version 1.0.0 is installed with `--force-reinstall` added to the second command.
+
+Mistakes in what a command is given, such as a file or folder that is not there, a folder that is not a package, a package that fails verification, a key file of another form or a CWE release list of the wrong form, are reported on one line beginning `error:`, with exit status 1. A malformed option or date is reported by the argument parser with the command's usage, and exit status 2.
 
 ## Evaluating a report
 
@@ -44,7 +51,7 @@ certin-benchmark summary record.json
 
 The command exits with status 2 for a non-compliant report. Options:
 
-* `--rdp` or `--rdp-store`: the imported Reference Data Package, or the store from which the latest is taken.
+* `--rdp` or `--rdp-store`: the imported Reference Data Package, or the store from which the latest is taken. A path that holds no package stops the command; without either option the evaluation runs without reference data, and the record says so.
 * `--deep-storage` and `--image-manifest`: where the proof-of-concept images are (see "Proof-of-concept images" below). Without either, the manifest named in `report.meta.json` beside the report is used.
 * `--assets-dir`: directory holding proof-of-concept images whose `reference` is a file path rather than an Objective 1 tag.
 * `--overrides`: reviewer decisions (Section 2, principle 8), as JSON:
@@ -89,7 +96,7 @@ The Suite reads every external source from a dated, signed package (Section 11).
 
 | Source | Dataset downloaded | From |
 | --- | --- | --- |
-| NVD (current values) | JSON 2.0 yearly, modified and recent feeds with `.meta` files | nvd.nist.gov/feeds/json/cve/2.0/ |
+| NVD (current values) | JSON 2.0 yearly and modified feeds with `.meta` files | nvd.nist.gov/feeds/json/cve/2.0/ |
 | NVD (earlier values) | Git history of the NVD mirror (one JSON record per CVE, synchronised every two hours since April 2023) | github.com/fkie-cad/nvd-json-data-feeds |
 | CVE List | Git repository of CVE records | github.com/CVEProject/cvelistV5 |
 | EPSS | Daily score files from 2021-04-14 | epss.empiricalsecurity.com |
@@ -103,33 +110,35 @@ The workflow:
 
 1. On the preparation host (outside the CERT-In environment):
    ```
-   certin-benchmark rdp fetch --staging staging/ --epss-from 2021-04-14 --nvd-mirror nvd-mirror/ \
-       --cwe-releases cwe_releases.json          # first package
-   certin-benchmark rdp fetch --staging staging/ --epss-days 7 --nvd-mirror nvd-mirror/ \
-       --history-since <previous package date>   # later packages
-   certin-benchmark rdp convert-empanelment Empanel_org.pdf --staging staging/   # each list received
-   certin-benchmark rdp convert-register register.xlsx --staging staging/        # each register received
+   certin-benchmark rdp fetch --staging staging-<date>/ --epss-from 2021-04-14 --nvd-mirror "$PWD/nvd-mirror" \
+       --cwe-releases cwe_releases.json                                   # first package
+   certin-benchmark rdp fetch --staging staging-<date>/ --previous packages/RDP-<previous> \
+       --nvd-mirror "$PWD/nvd-mirror" --cwe-releases cwe_releases.json      # later packages
+   certin-benchmark rdp convert-empanelment Empanel_org.pdf --staging staging-<date>/ --set-date <received>
+   certin-benchmark rdp convert-register register.xlsx --staging staging-<date>/ --register-date <received>
    # place CERT-In advisories (certin_advisories/advisories.json)
-   certin-benchmark rdp build --staging staging/ --out-root packages/ --previous packages/RDP-<previous>
-   certin-benchmark rdp sign packages/RDP-<date> --key private.pem
+   certin-benchmark rdp build --staging staging-<date>/ --out-root packages/ --previous packages/RDP-<previous>
+   certin-benchmark rdp keygen --private keys/rdp-signing.pem --public keys/rdp-signing.pub   # once
+   certin-benchmark rdp sign packages/RDP-<date> --key keys/rdp-signing.pem
    ```
-   The build validates the CVSS library against 3,264 reference vectors (the whole v3.1 base space and 672 v4.0 vectors; see `docs/VALIDATION.md`), verifies each source (NVD SHA-256 metadata, KEV structure, full parse, record counts against the previous package), carries forward any source that fails verification, and writes a manifest with retrieval times, publisher versions, file hashes, record counts and EPSS model versions. Each preparation is appended to `preparation_log.jsonl`. `--previous` is left out for the first package. Where a source's record count legitimately moves outside the expected range of the previous package's, `--accept-change <source>` accepts it and the manifest records the acceptance; without it the source is carried forward from the previous package. Packages built from the test fixtures hold synthetic empanelment records and are never named as `--previous` of a package for use.
+   `fetch` checks its arguments, the CWE release list and the previous package among them, before the first download. On a later package, `--previous` starts EPSS on the day after the previous package's last day and NVD history on the day before the UTC date of the mirror commit the previous fetch read; the day of overlap gives the same answers twice, where a gap would lose NVD's changes. Where the previous package holds no EPSS files or no NVD history, `--previous` fetches that source whole (EPSS from 2021-04-14, the mirror's history from its start), and `fetch` prints the window it reads. `--epss-from` and `--history-since` (read from midnight UTC of the date given) override it. `--history-since` is never given for a first package. Every file is written anew, as a temporary file renamed into place, so a later fetch never changes a package that shares EPSS files with the staging folder through hard links; a staging folder of its own for each package keeps each package's originals apart.
+   The build validates the CVSS library against 3,264 reference vectors (the whole v3.1 base space and 672 v4.0 vectors; see `docs/VALIDATION.md`), verifies each source (NVD SHA-256 metadata, KEV structure, full parse, record counts against the previous package), carries forward any source that fails verification, and writes a manifest with retrieval times, publisher versions, file hashes, record counts and EPSS model versions. Each preparation is appended to `preparation_log.jsonl`. `--previous` is left out for the first package, and otherwise names a package (a folder holding its manifest). The build refuses NVD history read from a date when it is not given the package that history continues, when that package holds no NVD history, or when the history starts after the UTC date of the last mirror commit that package read; it also refuses NVD history staged without the `SOURCE.json` that describes it. Where a source's record count legitimately moves outside the expected range of the previous package's, `--accept-change <source>` accepts it and the manifest records the acceptance; without it the source is carried forward from the previous package. The sources are named `nvd`, `nvd_history`, `cve_list`, `epss`, `kev`, `cwe`, `certin_advisories`, `empanelment` and `empanelment_register`, and any other name is refused. A package is assembled in a hidden folder beside its place and renamed into it once complete. A build that fails therefore leaves nothing behind, and one killed outright leaves only its hidden folder (`.RDP-<date>.partial`), which the next build of that date removes. Temporary files left by an interrupted download (`.<name>.part`) are not copied into the package's originals. Packages built from the test fixtures hold synthetic empanelment records and are never named as `--previous` of a package for use.
 2. Transfer on write-once media or through the approved unidirectional mechanism.
 3. Inside the environment:
    ```
    certin-benchmark rdp import RDP-<date> --store /srv/rdp --key public.pem
    ```
-   Import verifies the signature and every file hash, rejects unlisted files, and never overwrites an existing package.
+   Import verifies the signature and every file hash, rejects unlisted files, and never overwrites an existing package. It copies the package into a hidden folder of the store and renames it into place once complete, so an interrupted import leaves nothing that could be taken for the latest package.
 
-`convert-empanelment` writes `empanelment/set_<date>.json` with the PDF beside it, never overwrites an earlier set, and prints warnings for review. The list carries no date of its own, so the set is dated by the PDF's modification date unless `--set-date` gives the date the list was received. The converter reads each snapshot's section 7 table of named technical manpower, including rows the PDF's table structure leaves outside the table found on the page, people whose cells the document's merged cells divide into several rows, table bodies drawn offset from their headings, and words into which the PDF draws a stray space. Its warnings name, for review: snapshots that list no manpower (or give designations in place of names), directory entries without a snapshot, organisations with more than one snapshot (each kept with its date of declaration), section 7 serial numbers that are not in sequence, snapshots whose section 7 names more people than section 6 counts, and names that look divided inside a word. Every set received is kept: a set held in the previous package and no longer staged is carried into the new one, so that the set in force on any earlier release date can still be applied, and the record count is checked for the latest set against the previous package's latest set.
+`convert-empanelment` writes `empanelment/set_<date>.json` with the PDF beside it, never overwrites an earlier set, and prints warnings for review. The list carries no date of its own, so the set is dated by the PDF's modification date unless `--set-date` (YYYY-MM-DD) gives the date the list was received. The converter reads each snapshot's section 7 table of named technical manpower, including rows the PDF's table structure leaves outside the table found on the page, people whose cells the document's merged cells divide into several rows, table bodies drawn offset from their headings, and words into which the PDF draws a stray space. Its warnings name, for review: snapshots that list no manpower (or give designations in place of names), directory entries without a snapshot, organisations with more than one snapshot (each kept with its date of declaration), section 7 serial numbers that are not in sequence, snapshots whose section 7 names more people than section 6 counts, and names that look divided inside a word. Every set received is kept: a set held in the previous package and no longer staged is carried into the new one, so that the set in force on any earlier release date can still be applied, and the record count is checked for the latest set against the previous package's latest set.
 
 `convert-register` writes `empanelment_register/register_<date>.json` with the spreadsheet beside it, and never overwrites an earlier register. It finds the heading row by its headings (S.No., Code(Reference), AMBAK Code (Primary), Organisation Name, Empanelment Validity, and common variants; where two columns name the AMBAK code, the one marked Primary), fills merged cells, reads dates written as dates, as Excel serial numbers or as text, and keeps the former or other names a row gives ("Formerly ...", "Now ..."). It warns of a CERT-In reference or AMBAK code given to more than one row, a cell holding something other than one AMBAK code, an AMBAK code of another length than most or whose month is not 01 to 12, and rows without a code or a validity date, which are kept. Each row is numbered by its row in the sheet, with the sheet's own S.No. beside it. The register is dated by the day the spreadsheet was last saved, in India Standard Time (the workbook records the time in UTC), unless `--register-date` (YYYY-MM-DD) gives the date it was received. The build keeps every register received, as it keeps the sets, and links each row to the organisation of each set that it names, by name, former or other name, or, for a row whose name links to none, by the AMBAK code of a row of another register already linked; the manifest records, for the latest register and the latest set, the rows linked (and how many by AMBAK code) and any row naming no organisation of the set, or several. The register of 16 October 2026 links one to one with the 236 organisations of the list of 5 October 2026.
 
-The first `fetch` clones the NVD mirror with its full history and reads it once, which is the slowest step of the first preparation; later preparations update the clone and read only synchronisations since the previous package, whose history rows are carried into the new one. Before the mirror's values are used, the build compares the mirror's latest value of every CVE with NIST's own feed wherever both carry the same lastModified time; if more than 0.1% differ, the mirror's history is not used in that package. The comparison is recorded in the manifest.
+The first `fetch` clones the NVD mirror with its full history and reads it once, which is the slowest step of the first preparation; later preparations update the clone and read only synchronisations since the previous package, whose history rows are carried into the new one. Read from a date, the history also marks each record whose first state in the window lacks a value of some version; the build records that NVD removed the value only where the earlier packages held one. Before the mirror's values are used, the build compares the mirror's latest value of every CVE with NIST's own feed wherever both carry the same lastModified time; if more than 0.1% differ, the mirror's history is not used in that package. The comparison is recorded in the manifest.
 
 Lookups follow Section 11.3: EPSS from the daily file for the reference date; KEV by date of addition; NVD scores from the NVD state in force on the reference date (each value holds from the record's lastModified date, from NIST's feeds or the mirror's history), and NVD CWE assignments from the latest package on or before the reference date; CWE validity from the catalogue in force on the date; advisories issued on or before the date; empanelment records from the set in force on the release date (by the identifier the report states, through CERT-In's register where it is an AMBAK code or CERT-In reference, or by the organisation's name; where an organisation has declared its manpower more than once, the declaration made on or before the release date); the organisation's identifiers and the validity of its empanelment from the register in force on the release date (the latest dated on or before it, else the earliest).
 
-The format of the advisories file is defined in `src/certin_benchmark/refdata/build.py`, the empanelment set is the format written by `src/certin_benchmark/refdata/empanelment_pdf.py`, and the register the format written by `src/certin_benchmark/refdata/empanelment_register.py`. `rdp keygen` creates the Ed25519 key pair.
+The format of the advisories file is defined in `src/certin_benchmark/refdata/build.py`, the empanelment set is the format written by `src/certin_benchmark/refdata/empanelment_pdf.py`, and the register the format written by `src/certin_benchmark/refdata/empanelment_register.py`; an advisory's `issued_on` is a date of the form YYYY-MM-DD. `rdp keygen` creates the Ed25519 key pair once: it creates the key's folder where needed, open to its owner alone, writes the private key readable by its owner only, and never replaces an existing key, since packages signed with it would no longer import. It refuses one path for both keys and a path already taken, a broken link included, and warns where an existing folder of the key can be read by others.
 
 ## Calibration (Section 8)
 
@@ -201,6 +210,7 @@ The specification leaves the following points open. The code takes the reading s
 * CWE validity as at a past date depends on every CWE release since that date being staged; `rdp fetch --cwe-releases` takes the list.
 * The KEV catalogue is checked against the required fields and patterns of CISA's published schema in code rather than with a JSON Schema validator, to avoid a further dependency.
 * `rdp fetch` needs `git` on the preparation host. Inside the CERT-In environment `git` is not needed.
+* `rdp fetch` stops at the first file that still cannot be downloaded after four tries, leaving the later sources unfetched, and a rerun downloads every source again (with `--no-history` it keeps NVD history already extracted).
 * Engagement module checks for third-party certificates, network devices, pipelines and forensics use curated keyword lists in `curated/modules.yaml`.
 * The empanelment converter reads the layout of CERT-In's list as published in October 2026 (a directory, then a snapshot per organisation in thirteen numbered sections, the manpower in section 7). On that list it reads every snapshot's people as the list numbers them, and the names and particulars checked against the PDF are read correctly (`docs/VALIDATION.md`); a name the list breaks inside a word across two lines of its cell is read as written there, with a warning. A different layout may be read wrongly without a warning; the warnings (serial numbers out of sequence, more people named than counted, names divided inside a word) catch most such errors, and the people read should be checked against the list before a new layout is relied on. A person listed in an annexure that is not in the PDF, or under an organisation whose manpower is marked confidential, cannot be verified and leaves MC-10 Indeterminate.
 * Manpower names are compared as written, apart from the normalisation above. A person listed under a different spelling or with initials expanded is referred for review rather than matched.
