@@ -59,7 +59,9 @@ class BenchmarkEngine:
         overrides = overrides or {}
         cfg = self.config
         report = Report(data, theta=cfg.theta)
-        evaluator = SampledEvaluator(cfg.curated.rubrics, cfg.sampling, self.text_backend, self.vision_backend)
+        vision_cfg = (cfg.raw.get("models") or {}).get("vision") or {}
+        evaluator = SampledEvaluator(cfg.curated.rubrics, cfg.sampling, self.text_backend, self.vision_backend,
+                                     max_images_per_request=vision_cfg.get("max_images_per_request"))
         if overrides.get("items"):
             evaluator = _OverridingEvaluator(evaluator, overrides["items"])
         ctx = Context(report=report, config=cfg, evaluator=evaluator, refdata=self.refdata, assets_dir=self.assets_dir,

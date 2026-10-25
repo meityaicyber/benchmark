@@ -21,7 +21,7 @@ For each report the Suite returns a compliance status (Compliant, Non-compliant 
 | `src/certin_benchmark/calibration/` | Agreement measures, reference set split, weight and threshold fitting (Section 8) |
 | `config/suite.yaml` | Weights, cap, thresholds, tolerances, sampling and model settings |
 | `curated/` | Curated reference lists transferred inside each Reference Data Package (Section 11.1) |
-| `tests/` | 193 tests, including an end-to-end run on a sample report, a synthetic signed package, and a synthetic list and register in the layout of CERT-In's |
+| `tests/` | 207 tests, including an end-to-end run on a sample report, a synthetic signed package, and a synthetic list and register in the layout of CERT-In's |
 | `docs/VALIDATION.md` | Check of every external fact against the publishers' sites (12, 13 and 16 October 2026) and of the CERT-In documents supplied in October 2026 |
 | `docs/REPORT_FORMATS.md` | CERT-In's two audit report formats mapped to the master schema and the Suite's checks, with the fields the schema lacks |
 | `tools/` | Scripts that re-validate the CVSS reference vectors against the specification and FIRST's calculator |
@@ -62,6 +62,7 @@ The command exits with status 2 for a non-compliant report. Options:
   ```
 * `--record-responses file` and `--replay file`: record every model response, and later recompute the evaluation exactly from that record without the model (Section 11).
 * `--no-models`: run without the language and vision models. Items that need them are not evaluated, and the composite score is designated provisional.
+* `--jobs N`: evaluate several reports at once, in N separate processes (see "Language and vision models" below).
 
 From Python:
 
@@ -86,7 +87,15 @@ An entry whose tag is not in the manifest, whose stored object is missing or alt
 
 ## Language and vision models
 
-Both models run locally at a fixed version behind an OpenAI-compatible endpoint (for example vLLM); see `models` in `config/suite.yaml`. Set `model_version` to the exact model build so that it appears in every evaluation record. No backend contacts an external service.
+Both models run locally at a fixed version behind an OpenAI-compatible endpoint (for example vLLM); see `models` in `config/suite.yaml`. Both may point at one server serving one model, for example the model Objective 1 uses. Set `model_version` to the exact model build so that it appears in every evaluation record; `evaluate` warns while it is "unset". No backend contacts an external service.
+
+Before the first report, `evaluate` asks each configured server which models it serves and stops with an error if it cannot be reached or does not serve the configured `model`, rather than leaving every model-judged item unevaluated. Every request states its own settings, since vLLM fills any setting a request leaves out from the model's `generation_config.json`:
+
+* `top_p`, `top_k` and `min_p` (1.0, 0 and 0.0: the whole distribution at `sampling.temperature`), so that the five samples of an item can differ as Section 4 requires;
+* `chat_template_kwargs` (`enable_thinking: false`), which turns off the reasoning trace of models such as Nemotron 3 Nano Omni; a trace does not fit in a rating reply of `max_tokens`, and any trace that a server returns in the reply is never read as the answer;
+* `mm_processor_kwargs`, the model's image processing settings, sent with requests that carry images.
+
+The samples of an item are sent together (`concurrency`, 5), and `evaluate --jobs N` evaluates several reports at once in separate processes, so that the server can batch requests; the results are the same as one at a time. A server's error message is kept in the note of the item it affected. Images are sent as stored when JPEG or PNG and converted to PNG otherwise (Objective 1 keeps JPEG 2000, TIFF and other formats as embedded in the PDF); the stored file is not changed. A retest comparison sends the retest image with at most `max_images_per_request` − 1 of the finding's original images (8 in all by default), and the server must accept that many (vLLM `--limit-mm-per-prompt`).
 
 Every sampled item records its n ratings, distribution, score, variance, one-line rationales, seeds and model version. Report content is passed to the model inside delimiters and the model is instructed to treat it as data.
 

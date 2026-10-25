@@ -31,7 +31,6 @@ def _iso_date(s: str) -> str:
 
 def cmd_evaluate(a: argparse.Namespace) -> int:
     from .engine import BenchmarkEngine
-    from .evaluators import RecordingBackend, ReplayBackend, backend_from_config
     from .refdata.package import latest_package
     from .refdata.store import ReferenceData
 
@@ -51,27 +50,29 @@ def cmd_evaluate(a: argparse.Namespace) -> int:
     refdata = ReferenceData(rd_path) if rd_path else None
     curated = a.curated or (refdata.curated_dir if refdata is not None and refdata.curated_dir.exists() else None)
     cfg = load_config(a.config, curated)
-    text = vision = None
-    if a.replay:
-        recorded = json.loads(Path(a.replay).read_text())
-        text = ReplayBackend(recorded.get("text", {}), model_version=recorded.get("text_model_version", "replay"))
-        vision = ReplayBackend(recorded.get("vision", {}), model_version=recorded.get("vision_model_version", "replay"))
-    elif not a.no_models:
-        text = backend_from_config(cfg.raw.get("models", {}).get("text"))
-        vision = backend_from_config(cfg.raw.get("models", {}).get("vision"))
-    if a.record_responses:
-        text = RecordingBackend(text) if text else None
-        vision = RecordingBackend(vision) if vision else None
-    engine = BenchmarkEngine(cfg, refdata, text, vision, a.assets_dir)
+    text, vision = _run_backends(cfg, a.replay, a.no_models, bool(a.record_responses))
+    _check_models(text, vision)
     overrides = json.loads(Path(a.overrides).read_text()) if a.overrides else None
+    manifest = a.image_manifest if len(a.reports) == 1 else None
+    recorded: dict[str, dict] = {"text": {}, "vision": {}}
     rc = 0
-    for path in a.reports:
-        data = json.loads(Path(path).read_text())
-        from .images import ImageResolver
-        images = ImageResolver.for_report(path, a.assets_dir, a.image_manifest if len(a.reports) == 1 else None,
-                                          a.deep_storage)
-        rec = engine.evaluate(data, overrides=overrides, evaluated_on=_date(a.evaluated_on), images=images)
-        out = json.dumps(rec.to_dict(), indent=2, ensure_ascii=False, default=str)
+    jobs = max(1, int(a.jobs or 1))
+    if jobs > 1 and len(a.reports) > 1:
+        if refdata is not None:
+            refdata.close()
+            refdata = None
+        spec = {"config": a.config, "curated": str(curated) if curated else None,
+                "rdp": str(rd_path) if rd_path else None, "replay": a.replay, "no_models": a.no_models,
+                "record": bool(a.record_responses), "assets_dir": a.assets_dir, "deep_storage": a.deep_storage,
+                "overrides": overrides, "evaluated_on": a.evaluated_on}
+        outcomes = _evaluate_in_processes(spec, list(a.reports), jobs)
+    else:
+        engine = BenchmarkEngine(cfg, refdata, text, vision, a.assets_dir)
+        outcomes = ((path, _evaluate_report(engine, path, a.assets_dir, manifest, a.deep_storage, overrides,
+                                            a.evaluated_on).to_dict(), _take_recorded(text, vision))
+                    for path in a.reports)
+    for path, rec, got in outcomes:
+        out = json.dumps(rec, indent=2, ensure_ascii=False, default=str)
         if a.out:
             target = Path(a.out)
             if len(a.reports) > 1 or target.is_dir():
@@ -80,17 +81,116 @@ def cmd_evaluate(a: argparse.Namespace) -> int:
             target.write_text(out)
         else:
             print(out)
-        print(_summary(rec.to_dict()), file=sys.stderr)
-        if rec.compliance_status == "Non-compliant":
+        print(_summary(rec), file=sys.stderr)
+        for kind in recorded:
+            recorded[kind].update(got.get(kind) or {})
+        if rec.get("compliance_status") == "Non-compliant":
             rc = 2
     if a.record_responses:
         Path(a.record_responses).write_text(json.dumps({
-            "text": text.recorded if text else {}, "vision": vision.recorded if vision else {},
+            "text": recorded["text"], "vision": recorded["vision"],
             "text_model_version": text.model_version if text else None,
             "vision_model_version": vision.model_version if vision else None}, indent=1))
     if refdata is not None:
         refdata.close()
     return rc
+
+
+def _run_backends(cfg, replay: str | None, no_models: bool, record: bool):
+    """The text and vision backends of a run: replayed from a recording, none, or the servers in the configuration."""
+    from .evaluators import RecordingBackend, ReplayBackend, backend_from_config
+    text = vision = None
+    if replay:
+        recorded = json.loads(Path(replay).read_text())
+        text = ReplayBackend(recorded.get("text", {}), model_version=recorded.get("text_model_version", "replay"))
+        vision = ReplayBackend(recorded.get("vision", {}), model_version=recorded.get("vision_model_version", "replay"))
+    elif not no_models:
+        text = backend_from_config(cfg.raw.get("models", {}).get("text"))
+        vision = backend_from_config(cfg.raw.get("models", {}).get("vision"))
+    if record:
+        text = RecordingBackend(text) if text else None
+        vision = RecordingBackend(vision) if vision else None
+    return text, vision
+
+
+def _check_models(text, vision) -> None:
+    """Before the first report: each configured server is reached and serves the configured model. A run against a
+    missing or wrong model would otherwise leave every model-judged item unevaluated, report after report."""
+    from .errors import OperatorError
+    from .evaluators import BackendUnavailable, OpenAICompatibleBackend
+    checked = set()
+    for kind, backend in (("text", text), ("vision", vision)):
+        inner = getattr(backend, "inner", backend)
+        if not isinstance(inner, OpenAICompatibleBackend):
+            continue
+        if (inner.base_url, inner.model) not in checked:
+            checked.add((inner.base_url, inner.model))
+            try:
+                inner.check()
+            except BackendUnavailable as exc:
+                raise OperatorError(f"{kind} model: {exc}; start the server or correct models.{kind} in the Suite "
+                                    "configuration, or pass --no-models") from None
+        if str(inner.model_version or "").strip().lower() in ("", "unset"):
+            print(f"warning: models.{kind}.model_version is unset, so the evaluation records will not identify the "
+                  "model build", file=sys.stderr)
+
+
+def _evaluate_report(engine, path: str, assets_dir, image_manifest, deep_storage, overrides, evaluated_on):
+    from .images import ImageResolver
+    data = json.loads(Path(path).read_text())
+    images = ImageResolver.for_report(path, assets_dir, image_manifest, deep_storage)
+    return engine.evaluate(data, overrides=overrides, evaluated_on=_date(evaluated_on), images=images)
+
+
+def _take_recorded(text, vision) -> dict:
+    """The responses recorded since the last call, removed from the recording backends."""
+    got = {}
+    for kind, backend in (("text", text), ("vision", vision)):
+        if backend is not None and hasattr(backend, "recorded"):
+            got[kind] = dict(backend.recorded)
+            backend.recorded.clear()
+    return got
+
+
+_WORKER: dict = {}
+
+
+def _worker_init(spec: dict) -> None:
+    from .engine import BenchmarkEngine
+    from .refdata.store import ReferenceData
+    cfg = load_config(spec["config"], spec["curated"])
+    text, vision = _run_backends(cfg, spec["replay"], spec["no_models"], spec["record"])
+    refdata = ReferenceData(spec["rdp"]) if spec["rdp"] else None
+    _WORKER.update(spec=spec, text=text, vision=vision,
+                   engine=BenchmarkEngine(cfg, refdata, text, vision, spec["assets_dir"]))
+
+
+def _worker_evaluate(path: str) -> tuple[str, dict, dict]:
+    spec = _WORKER["spec"]
+    rec = _evaluate_report(_WORKER["engine"], path, spec["assets_dir"], None, spec["deep_storage"], spec["overrides"],
+                           spec["evaluated_on"])
+    return path, rec.to_dict(), _take_recorded(_WORKER["text"], _WORKER["vision"])
+
+
+def _evaluate_in_processes(spec: dict, reports: list[str], jobs: int):
+    """Evaluate several reports at once, each process with its own engine and reference data; results come back in
+    the order of the reports. With a model server, this and the concurrent samples of each item keep it busy."""
+    import multiprocessing
+    import os
+    from concurrent.futures import ProcessPoolExecutor
+    package_parent = str(Path(__file__).resolve().parents[1])
+    saved = os.environ.get("PYTHONPATH")
+    # the new processes import this package; a source checkout is found through PYTHONPATH
+    os.environ["PYTHONPATH"] = os.pathsep.join(p for p in (package_parent, saved) if p)
+    try:
+        with ProcessPoolExecutor(max_workers=jobs, mp_context=multiprocessing.get_context("spawn"),
+                                 initializer=_worker_init, initargs=(spec,)) as pool:
+            yield from pool.map(_worker_evaluate, reports)
+    finally:
+        if saved is None:
+            os.environ.pop("PYTHONPATH", None)
+        else:
+            os.environ["PYTHONPATH"] = saved
 
 
 def _summary(d: dict) -> str:
@@ -277,6 +377,8 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--record-responses", help="write model responses for later replay")
     e.add_argument("--evaluated-on", type=_iso_date, help="evaluation date (YYYY-MM-DD) for the package age")
     e.add_argument("--out", help="output file, or directory when several reports are given")
+    e.add_argument("--jobs", type=int, default=1, help="evaluate this many reports at once, in separate processes "
+                                                       "(several reports only)")
     e.set_defaults(fn=cmd_evaluate)
 
     s = sub.add_parser("summary", help="print a summary of an evaluation record")

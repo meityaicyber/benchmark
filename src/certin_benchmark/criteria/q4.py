@@ -156,7 +156,11 @@ def poc(ctx: Context, cr, o: dict, j: int, rec: dict) -> float | None:
                 aspects.append(add_sampled(cr, ctx.evaluator.fixed(
                     f"{pid}.retest", "q4c_retest_distinctness", 0.0,
                     "retest image is byte-for-byte the same image as original evidence of this finding")))
-            elif cap is None or (originals and cap <= max(originals)):
+            elif cap is None:
+                aspects.append(add_sampled(cr, ctx.evaluator.fixed(
+                    f"{pid}.retest", "q4c_retest_distinctness", 0.0,
+                    "retest capture date not stated, so it cannot be shown to be later than the original evidence")))
+            elif originals and cap <= max(originals):
                 aspects.append(add_sampled(cr, ctx.evaluator.fixed(
                     f"{pid}.retest", "q4c_retest_distinctness", 0.0,
                     "retest capture date not later than the original evidence")))

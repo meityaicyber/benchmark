@@ -63,17 +63,39 @@ reference_data:
   max_package_age_days: 14
 
 # Language and vision models, held locally at a fixed version (Section 11.1).
-# Any OpenAI-compatible inference server inside the environment (for example vLLM).
+# Any OpenAI-compatible inference server inside the environment (for example vLLM). Both may point at one server
+# serving one model (for example the model Objective 1 uses). `evaluate` checks before the first report that the
+# server serves `model`, and stops if not.
+# Every request states its own sampling settings: vLLM otherwise fills them from the model's generation_config.json,
+# which may make the five samples identical (top_k 1) and remove the disagreement the Suite measures (Section 4).
+# chat_template_kwargs reaches the model's chat template: enable_thinking false turns off the reasoning trace of
+# models such as Nemotron 3 Nano Omni, which a rating reply of max_tokens cannot hold; templates without the
+# setting ignore it.
 models:
   text:
     backend: openai_compatible    # openai_compatible | replay | none
     base_url: "http://127.0.0.1:8000/v1"
     model: "local-text-model"
-    model_version: "unset"
+    model_version: "unset"        # the exact build, for example the revision pinned in Objective 1's models/manifest.json
     timeout_seconds: 120
+    max_tokens: 400
+    top_p: 1.0                    # sample from the whole distribution at `sampling.temperature`
+    top_k: 0                      # 0: no top-k limit (vLLM)
+    min_p: 0.0
+    chat_template_kwargs: {enable_thinking: false}
+    concurrency: 5                # samples of one item sent together; the server batches them
   vision:
     backend: openai_compatible
     base_url: "http://127.0.0.1:8001/v1"
     model: "local-vision-model"
     model_version: "unset"
     timeout_seconds: 180
+    max_tokens: 400
+    top_p: 1.0
+    top_k: 0
+    min_p: 0.0
+    chat_template_kwargs: {enable_thinking: false}
+    mm_processor_kwargs: {}       # image processing settings of the model, sent with requests that carry images
+    concurrency: 5
+    max_images_per_request: 8     # a retest comparison sends the retest image and up to 7 original images; start the
+                                  # server with at least this limit (vLLM --limit-mm-per-prompt)
