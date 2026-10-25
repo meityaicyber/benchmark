@@ -14,6 +14,7 @@ from .criteria import CRITERIA
 from .evaluators.sampling import SampledEvaluator
 from .mandatory import run_mandatory
 from .modules import select_modules
+from .profile import report_profile
 from .record_checks import run_record_checks
 from .refdata.store import ReferenceData
 from .report import Report
@@ -136,6 +137,11 @@ class BenchmarkEngine:
         except Exception as exc:  # the record is still produced; MC-10 has already referred any lookup failure
             organisation = {}
             ctx.warnings.append(f"auditing organisation could not be identified for the record ({type(exc).__name__}: {exc})")
+        try:
+            profile = report_profile(report, (cfg.curated.engagements or {}).get("enumerated_audit_types"))
+        except Exception as exc:  # the profile serves the analysis of many records; it never stops an evaluation
+            profile = {}
+            ctx.warnings.append(f"report profile could not be built ({type(exc).__name__}: {exc})")
 
         referrals = [f"{c.id}: {'; '.join(c.deficiencies[:3])}" for c in checks if c.referred]
         incomplete: list[str] = []
@@ -173,6 +179,7 @@ class BenchmarkEngine:
             report_structure=report.get("meta.report_structure") or [],
             warnings=ctx.warnings,
             auditing_organisation=organisation,
+            report_profile=profile,
         )
 
 

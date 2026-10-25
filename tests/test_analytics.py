@@ -1,0 +1,544 @@
+"""Tests of the analytics (Objective 3, components B to F).
+
+The analyses run on synthetic evaluation records with known patterns built in (analytics/synthetic.py), and each
+test checks that an analysis finds what was planted, and does not find what was not. The patterns are recovered on
+other seeds as well; the tolerances allow for the noise of one draw.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+import os
+import stat
+import tempfile
+import unittest
+from functools import lru_cache
+from pathlib import Path
+
+import helpers  # noqa: F401  (path setup)
+from staging import scripted_backend
+
+from certin_benchmark.analytics.store import AnalyticsStore, Pseudonymiser, agency_identity
+from certin_benchmark.cli import main
+from certin_benchmark.config import load_config
+from certin_benchmark.errors import OperatorError
+
+try:
+    import numpy  # noqa: F401
+    HAVE_NUMPY = True
+except ImportError:          # the analytics are an optional extra; the store and the pass mark need no numpy
+    HAVE_NUMPY = False
+
+needs_numpy = unittest.skipUnless(HAVE_NUMPY, "the analytics need numpy (pip install 'certin-benchmark[analytics]')")
+
+
+def _tmp() -> Path:
+    return Path(tempfile.mkdtemp(prefix="certin-analytics-"))
+
+
+def _record(report_id: str, digest: str = "cfg-a", ambak: str | None = "2099000001", q: float = 70.0,
+            status: str = "Compliant", date: str | None = "2025-01-01", provisional: bool = False) -> dict:
+    """A minimal evaluation record of the Suite, with the fields the store reads."""
+    return {
+        "report_id": report_id, "suite_version": "1.0.0", "config_digest": digest,
+        "evaluated_at": "2026-10-26T00:00:00+00:00", "compliance_status": status, "provisional": provisional,
+        "quality_score": q, "composite_score": q if status != "Non-compliant" else min(q, 50.0),
+        "cap_applied": 50.0 if status == "Non-compliant" else 100.0,
+        "mandatory_checks": [{"id": "MC-01", "result": "Fail" if status == "Non-compliant" else "Pass"},
+                             {"id": "MC-21", "result": "Not applicable"}],
+        "criteria": [{"id": "Q1", "score": 80.0, "evaluable": True, "weight": 10.0,
+                      "components": {"a": {"score": 75.0, "weight": 0.5}}},
+                     {"id": "Q4", "score": None, "evaluable": False, "weight": 25.0,
+                      "per_finding": {"F-1": {"S_a": 1.0, "S_c": 60.0, "cap": 100.0, "E": 55.0}}}],
+        "referrals": [], "incomplete": [], "modules": ["web"],
+        "reference_data": {"package_id": "RDP-2099-01-01"},
+        "auditing_organisation": ({"found": True, "ambak_code": ambak, "certin_reference": "RE-2099-1",
+                                   "name_in_records": "M/s Invented Assurance Agency"} if ambak else {"found": False}),
+        "report_profile": {"report_date": date, "date_basis": "release" if date else None,
+                           "audit_types": ["VAPT"], "engagement_type": "VAPT", "sector": "Government",
+                           "entity_type": "PSU", "assets": 3, "findings": 1,
+                           "severity_counts": {"Critical": 0, "High": 1, "Medium": 0, "Low": 0, "Informational": 0},
+                           "compliance_entries": 0,
+                           "finding_list": [{"finding_id": "F-1", "severity": "High", "status": "Open"}]},
+    }
+
+
+def _run_cli(*argv: str) -> tuple[int, str, str]:
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = main(list(argv))
+    return rc, out.getvalue(), err.getvalue()
+
+
+# ---- the store and its pseudonymous tokens ------------------------------------------------------------------------
+class Store(unittest.TestCase):
+    def test_key_is_created_once_and_readable_by_its_owner_only(self):
+        d = _tmp()
+        with AnalyticsStore(d / "a.sqlite", d / "keys" / "k.key", create_key=True) as st:
+            self.assertTrue(st.pseudo.created)
+            token = st.pseudo.token("agency", "ambak_code:2099000001")
+        self.assertEqual(stat.S_IMODE(os.stat(d / "keys" / "k.key").st_mode), 0o600)
+        with AnalyticsStore(d / "a.sqlite", d / "keys" / "k.key", create_key=True) as again:
+            self.assertFalse(again.pseudo.created)
+            self.assertEqual(again.pseudo.token("agency", "ambak_code:2099000001"), token)
+
+    def test_missing_store_missing_key_and_wrong_key_are_refused(self):
+        d = _tmp()
+        with self.assertRaises(OperatorError):
+            AnalyticsStore(d / "none.sqlite")                       # reading needs an existing store
+        with self.assertRaises(OperatorError):
+            Pseudonymiser(d / "none.key")                           # a key is created only when asked
+        with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
+            st.load_record(_record("R-1"))
+            st.db.commit()
+        with self.assertRaises(OperatorError):                      # records held, key gone: never a new key
+            AnalyticsStore(d / "a.sqlite", d / "moved.key", create_key=True)
+        self.assertFalse((d / "moved.key").exists())
+        Pseudonymiser(d / "other.key", create=True)
+        with self.assertRaises(OperatorError):                      # a different key than the one loaded with
+            AnalyticsStore(d / "a.sqlite", d / "other.key")
+        with AnalyticsStore(d / "a.sqlite") as st:                  # reading needs no key
+            self.assertEqual(len(st.evaluations()), 1)
+
+    def test_tokens(self):
+        d = _tmp()
+        p = Pseudonymiser(d / "k.key", create=True)
+        t = p.token("agency", "ambak_code:2099000001")
+        self.assertRegex(t, r"^AG-[0-9a-f]{16}$")
+        self.assertEqual(p.token("agency", "  AMBAK_CODE:2099000001 "), t)    # case and spaces do not matter
+        self.assertNotEqual(p.token("report", "ambak_code:2099000001"), t)    # kinds are kept apart
+        self.assertNotEqual(Pseudonymiser(d / "k2.key", create=True).token("agency", "ambak_code:2099000001"), t)
+
+    def test_agency_identity(self):
+        self.assertEqual(agency_identity({"found": True, "ambak_code": "2099000001", "certin_reference": "RE-1"}),
+                         "ambak_code:2099000001")
+        self.assertEqual(agency_identity({"found": True, "ambak_code": " ", "certin_reference": "RE-1"}),
+                         "certin_reference:RE-1")
+        self.assertEqual(agency_identity({"found": True, "org_id": "certin-emp:x"}), "org_id:certin-emp:x")
+        self.assertIsNone(agency_identity({"found": False, "ambak_code": "2099000001"}))
+        self.assertIsNone(agency_identity({}))
+
+    def test_no_identifier_or_name_enters_the_store(self):
+        d = _tmp()
+        with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
+            st.load_record(_record("SAMPLE-ID-77", ambak="2099123456"))
+            st.db.commit()
+            dump = "\n".join(st.db.iterdump())
+            row = st.evaluations()[0]
+            self.assertEqual(st.db.execute("SELECT count(*) FROM finding").fetchone()[0], 1)
+            self.assertEqual(st.db.execute("SELECT count(*) FROM component").fetchone()[0], 1)
+        for text in ("SAMPLE-ID-77", "2099123456", "RE-2099-1", "Invented Assurance", "F-1"):
+            self.assertNotIn(text, dump)
+        self.assertTrue(row["report_token"].startswith("RE-") and row["agency_token"].startswith("AG-"))
+        self.assertEqual(row["checks"], {"MC-01": "Pass", "MC-21": "Not applicable"})
+        self.assertEqual(row["criteria"], {"Q1": 80.0})                   # criteria not evaluated are left out
+
+    def test_configurations_are_kept_apart_and_unusable_evaluations_left_out(self):
+        d = _tmp()
+        with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
+            for i in range(3):
+                st.load_record(_record(f"R-{i}", digest="aaaa1111"))
+            st.load_record(_record("R-0", digest="bbbb2222", q=40.0))
+            st.load_record(_record("R-p", digest="aaaa1111", provisional=True))
+            st.load_record(_record("R-nodate", digest="aaaa1111", date=None))
+            st.load_record(_record("R-1", digest="aaaa1111", q=71.0))          # loading again replaces
+            st.db.commit()
+            self.assertEqual([v["n"] for v in st.versions()], [5, 1])
+            rows = st.evaluations()                                          # the configuration with most
+            self.assertEqual(len(rows), 3)
+            self.assertEqual({r["config_digest"] for r in rows}, {"aaaa1111"})
+            self.assertEqual(sorted(r["quality_score"] for r in rows), [70.0, 70.0, 71.0])
+            self.assertEqual(len(st.evaluations("bbbb")), 1)                  # a prefix is enough
+            self.assertEqual(len(st.evaluations("aaaa1111", include_provisional=True)), 4)   # never without a date
+            self.assertEqual(len(st.evaluations(since="2025-01-02")), 0)
+            with self.assertRaises(OperatorError):
+                st.evaluations("cccc")
+            self.assertIsNone(st.row(_record("R-u", ambak=None))["agency_token"])
+            with self.assertRaises(OperatorError):
+                st.row({"report_id": "x"})                                   # not an evaluation record
+
+    def test_rows_need_the_key(self):
+        d = _tmp()
+        with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
+            st.load_record(_record("R-1"))
+            st.db.commit()
+        with AnalyticsStore(d / "a.sqlite") as st, self.assertRaises(OperatorError):
+            st.row(_record("R-2"))
+
+
+# ---- synthetic records ----------------------------------------------------------------------------------------------
+@lru_cache(maxsize=None)
+def _synthetic(**kw):
+    from certin_benchmark.analytics.synthetic import SyntheticSpec, generate
+    records, truth = generate(SyntheticSpec(**kw))
+    d = _tmp()
+    st = AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True)
+    for r in records:
+        st.load_record(r)
+    st.db.commit()
+    rows = st.evaluations()
+    st.close()                     # the tests use only its key (st.pseudo) from here
+    return st, rows, truth, records
+
+
+def _agency(st, code: str) -> str:
+    return st.pseudo.token("agency", f"ambak_code:{code}")
+
+
+@needs_numpy
+class Synthetic(unittest.TestCase):
+    def test_reproducible_and_invented(self):
+        from certin_benchmark.analytics.synthetic import SyntheticSpec, generate
+        a, truth = generate(SyntheticSpec(reports=200, agencies=30, seed=3))
+        b, _ = generate(SyntheticSpec(reports=200, agencies=30, seed=3))
+        c, _ = generate(SyntheticSpec(reports=200, agencies=30, seed=4))
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, c)
+        self.assertEqual(len(a), 200)
+        self.assertEqual(len({r["auditing_organisation"].get("ambak_code") for r in a} - {None}), 30)
+        for r in a:
+            self.assertTrue(r["synthetic"])
+            self.assertTrue(r["config_digest"].startswith("synthetic-"))
+            self.assertRegex(r["report_id"], r"^SYN-\d{5}$")
+            org = r["auditing_organisation"]
+            if org["found"]:
+                self.assertTrue(org["ambak_code"].startswith("2099"))
+                self.assertIn("Synthetic Audit Agency", org["name_in_records"])
+            self.assertTrue("2022-04-01" <= r["report_profile"]["report_date"] <= "2026-09-30")
+        self.assertEqual(set(truth["outliers"]) <= {r["report_id"] for r in a}, True)
+
+    def test_shape_of_the_archive(self):
+        st, rows, truth, records = _synthetic()
+        self.assertEqual(len(records), 850)
+        self.assertGreater(len(rows), 790)                     # provisional evaluations are left out of analyses
+        self.assertLess(len(rows), 850)
+        share_nc = sum(r["compliance_status"] == "Non-compliant" for r in rows) / len(rows)
+        self.assertTrue(0.3 < share_nc < 0.7)
+        sizes = sorted((sum(1 for r in rows if r["agency_token"] == a)
+                        for a in {r["agency_token"] for r in rows if r["agency_token"]}), reverse=True)
+        self.assertGreater(sizes[0], 10 * sizes[-1])           # very unequal numbers of reports, as in the archive
+
+
+# ---- C: peers -----------------------------------------------------------------------------------------------------
+@needs_numpy
+class Peers(unittest.TestCase):
+    def test_groups_fall_back_to_coarser_levels(self):
+        from certin_benchmark.analytics.peers import Baseline, build_baseline
+        st, rows, _, _ = _synthetic()
+        base = build_baseline(rows, min_group=20, config_digest=rows[0]["config_digest"])
+        self.assertEqual(base.groups["all reports"]["n"], len(rows))
+        self.assertTrue(all(g["n"] >= 20 for k, g in base.groups.items()))
+        rare = dict(rows[0], sector="Fisheries", engagement_type="Red Team Assessment", assets=1)
+        key, _ = base.group_for(rare)
+        self.assertNotIn("Fisheries", key)
+        unknown = dict(rows[0], engagement_type="Quantum Audit")
+        self.assertEqual(base.group_for(unknown)[0], "all reports")
+        d = _tmp()
+        base.save(d / "b.json")
+        self.assertEqual(Baseline.load(d / "b.json").to_dict(), base.to_dict())
+
+    def test_comparison_with_peers(self):
+        from certin_benchmark.analytics.peers import build_baseline
+        _, rows, _, _ = _synthetic()
+        base = build_baseline(rows)
+        g = base.groups["all reports"]
+        mid = dict(rows[0], engagement_type="Quantum Audit", quality_score=g["quantiles"]["p50"])
+        c = base.compare(mid)
+        self.assertAlmostEqual(c["percentile"], 50, delta=1)
+        self.assertAlmostEqual(c["robust_z"], 0, delta=0.05)
+        low = base.compare(dict(mid, quality_score=5.0))
+        self.assertLess(low["robust_z"], -3)
+        with self.assertRaises(ValueError):
+            build_baseline(rows, since="2030-01-01")
+
+
+# ---- B: anomalies -------------------------------------------------------------------------------------------------
+@needs_numpy
+class Anomalies(unittest.TestCase):
+    def test_planted_outliers_found_with_few_false_flags(self):
+        from certin_benchmark.analytics.outliers import report_outliers
+        from certin_benchmark.analytics.peers import build_baseline
+        st, rows, truth, _ = _synthetic()
+        flags = report_outliers(rows, build_baseline(rows))
+        planted = {st.pseudo.token("report", r) for r in truth["outliers"]}
+        found = {f["report_token"] for f in flags}
+        self.assertGreaterEqual(len(planted & found), 5)          # of 6
+        self.assertLessEqual(len(found - planted), 0.02 * len(rows))
+        self.assertTrue(all(f["reasons"] for f in flags))
+
+    def test_checks_that_no_longer_separate_or_that_shift(self):
+        from certin_benchmark.analytics.outliers import check_monitor
+        _, rows, truth, _ = _synthetic()
+        mon = {c["check"]: c for c in check_monitor(rows)}
+        self.assertTrue(any("no longer separates" in f for f in mon[truth["rare_check"]]["flags"]))
+        shift = mon[truth["check_shift"]["check"]]["changes"]
+        self.assertEqual(len(shift), 1)
+        import datetime as dt
+        days = abs((dt.date.fromisoformat(shift[0]["from_date"]) -
+                    dt.date.fromisoformat(truth["check_shift"]["date"])).days)
+        self.assertLess(days, 90)
+        self.assertAlmostEqual(shift[0]["rate_before"], truth["check_shift"]["rates"][0], delta=0.03)
+        self.assertAlmostEqual(shift[0]["rate_after"], truth["check_shift"]["rates"][1], delta=0.05)
+        others = [c for c, v in mon.items() if v["changes"] and c != truth["check_shift"]["check"]]
+        self.assertEqual(others, [])
+        self.assertNotIn("Indeterminate", str(mon[truth["indeterminate_check"]]["applicable"]))
+
+    def test_co_failures(self):
+        from certin_benchmark.analytics.outliers import co_failures
+        _, rows, truth, _ = _synthetic()
+        top = co_failures(rows)[0]
+        self.assertEqual((top["a"], top["b"]), (truth["linked_check"]["check"], truth["linked_check"]["criterion"]))
+        self.assertLess(top["correlation"], -0.2)
+
+    def test_agency_levels_are_pooled_and_few_lie_outside_the_limits(self):
+        from certin_benchmark.analytics.outliers import agency_levels
+        _, rows, _, _ = _synthetic()
+        lv = agency_levels(rows, threshold=60)
+        agencies = lv["agencies"]
+        outside = [a for a in agencies if a["funnel"] != "within limits"]
+        self.assertLessEqual(len(outside), 0.1 * len(agencies))
+        small = [a["pooling"] for a in agencies if a["reports"] <= 2]
+        large = [a["pooling"] for a in agencies if a["reports"] >= 20]
+        self.assertGreater(min(small), max(large))                 # few reports: pulled more towards the average
+        self.assertTrue(all(0 <= a["probability_below_threshold"] <= 1 for a in agencies))
+        self.assertTrue(all(a["interval"][0] <= a["estimate"] <= a["interval"][1] for a in agencies))
+
+
+# ---- D: trends ----------------------------------------------------------------------------------------------------
+@needs_numpy
+class Trends(unittest.TestCase):
+    def test_population_trend_and_the_step_of_the_guidelines(self):
+        from certin_benchmark.analytics.trends import population_trend
+        _, rows, truth, _ = _synthetic(planted_slope=0.0, change_delta=0.0)
+        pt = population_trend(rows)
+        for measure in ("average_report", "within_agencies"):
+            terms = pt[measure]["terms"]
+            self.assertAlmostEqual(terms["per_year"]["logit"], truth["trend_per_year"], delta=0.06)
+            self.assertAlmostEqual(terms["break 2025-07-25"]["logit"], truth["guidelines"]["step"], delta=0.15)
+        self.assertEqual(pt["within_agencies"]["measures"], "change within agencies")
+
+    def test_agency_trends_and_changes(self):
+        from certin_benchmark.analytics.trends import TrendModel, agency_changes, agency_trends
+        st, rows, truth, _ = _synthetic()
+        model = TrendModel(within_agency=True).fit(rows)
+        trends = {a["agency_token"]: a for a in agency_trends(rows, model)}
+        improving, declining = _agency(st, truth["improving"]), _agency(st, truth["declining"])
+        changing = _agency(st, truth["change"]["agency"])
+        self.assertEqual(trends[improving]["trend"], "improving")
+        self.assertEqual(trends[declining]["trend"], "declining")
+        flagged = {t for t, a in trends.items() if a["trend"] != "no clear trend"}
+        self.assertLessEqual(len(flagged - {improving, declining, changing}), 1)
+        changes = {c["agency_token"]: c for c in agency_changes(rows, model)}
+        self.assertIn(changing, changes)
+        import datetime as dt
+        first = changes[changing]["changes"][0]
+        self.assertLess(abs((dt.date.fromisoformat(first["from_date"]) -
+                             dt.date.fromisoformat(truth["change"]["date"])).days), 60)
+        self.assertLess(first["shift_logit"], -0.7)
+        self.assertLessEqual(len(set(changes) - {improving, declining, changing}), 1)
+
+    def test_no_trend_flagged_where_none_was_planted(self):
+        from certin_benchmark.analytics.trends import agency_trends
+        _, rows, _, _ = _synthetic(planted_slope=0.0, change_delta=0.0)
+        self.assertEqual([a for a in agency_trends(rows) if a["trend"] != "no clear trend"], [])
+
+    def test_scores_by_period(self):
+        from certin_benchmark.analytics.trends import by_period, period_of
+        _, rows, _, _ = _synthetic()
+        q = by_period(rows, "quarter")
+        self.assertEqual(sum(p["reports"] for p in q), len(rows))
+        self.assertEqual([p["period"] for p in q], sorted(p["period"] for p in q))
+        self.assertTrue(all(p["interval"][0] <= p["mean_score"] <= p["interval"][1] for p in q))
+        self.assertEqual(period_of("2025-07-25"), "2025-Q3")
+        self.assertEqual(period_of("2025-07-25", "month"), "2025-07")
+
+
+# ---- E: prediction ------------------------------------------------------------------------------------------------
+@needs_numpy
+class Prediction(unittest.TestCase):
+    def test_backtest_beats_the_baselines(self):
+        from certin_benchmark.analytics.predict import backtest
+        _, rows, _, _ = _synthetic()
+        bt = backtest(rows)
+        self.assertGreater(bt["folds"], 8)
+        self.assertTrue(bt["model_beats_baselines"]["score_mae"])
+        res = bt["results"]
+        best_brier = min(v["brier_non_compliance"] for k, v in res.items() if k != "model")
+        self.assertLessEqual(res["model"]["brier_non_compliance"], best_brier + 0.003)
+        self.assertGreater(res["model"]["coverage_95"], 0.85)
+
+    def test_agency_record_comes_from_earlier_reports_only(self):
+        import numpy as np
+        from certin_benchmark.analytics.predict import ExpectedScoreModel
+        from certin_benchmark.analytics.stats import to_logit
+        _, rows, _, _ = _synthetic()
+        rows = sorted(rows, key=lambda r: r["report_date"])[:300]
+        m = ExpectedScoreModel(lam=3.0, nc_lam=3.0).fit(rows)
+        z = to_logit([r["quality_score"] for r in rows])
+        y = np.array([r["compliance_status"] == "Non-compliant" for r in rows], float)
+        before = m._history(rows, z, y)
+        last = len(rows) - 1
+        z2, y2 = z.copy(), y.copy()
+        z2[last], y2[last] = -5.0, 1 - y2[last]                      # change the latest report
+        after = m._history(rows, z2, y2)
+        same_day = [i for i, r in enumerate(rows) if r["report_date"] == rows[last]["report_date"]]
+        self.assertTrue(np.allclose(before[same_day], after[same_day]))   # not even reports of the same date see it
+        self.assertTrue(np.allclose(before, after))
+
+    def test_predictions(self):
+        from certin_benchmark.analytics.predict import ExpectedScoreModel
+        _, rows, _, _ = _synthetic()
+        rows = sorted(rows, key=lambda r: r["report_date"])
+        m = ExpectedScoreModel().fit(rows[:700])
+        for p in m.predict(rows[700:]):
+            self.assertTrue(p["interval_95"][0] <= p["interval_80"][0] <= p["expected_score"]
+                            <= p["interval_80"][1] <= p["interval_95"][1])
+            self.assertTrue(0 < p["probability_non_compliant"] < 1)
+        self.assertIn(m.describe()["penalty_score"], (0.3, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0))
+        with self.assertRaises(ValueError):
+            ExpectedScoreModel().fit(rows[:20])
+
+    def test_cross_validation_chooses_the_penalty_the_data_support(self):
+        import numpy as np
+        from certin_benchmark.analytics.predict import choose_logistic, choose_ridge
+        rng = np.random.default_rng(1)
+        X = np.column_stack([np.ones(300), rng.normal(size=(300, 10))])
+        beta = rng.normal(size=11)
+        self.assertLessEqual(choose_ridge(X, X @ beta + rng.normal(0, 0.1, 300)), 3.0)    # strong signal
+        self.assertEqual(choose_ridge(X, rng.normal(size=300)), 300.0)                   # noise only
+        self.assertEqual(choose_logistic(X, (rng.random(300) < 0.5).astype(float)), 300.0)
+
+
+# ---- F: impact of a proposed change ----------------------------------------------------------------------------------
+class Impact(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = _tmp()
+        cls.report = cls.dir / "sample.json"
+        cls.report.write_text(json.dumps(helpers.sample()))
+
+    @needs_numpy
+    def test_a_lower_cap_lowers_the_composite_of_non_compliant_reports(self):
+        from certin_benchmark.analytics.impact import impact
+        r = impact([self.report], {"non_compliance_cap": 40}, refdata=helpers.refdata(),
+                   text_backend=scripted_backend(4), evaluated_on=helpers.EVAL_DATE)
+        self.assertNotEqual(r["configuration"]["current"], r["configuration"]["proposed"])
+        self.assertEqual(r["status_transitions"], {"Non-compliant -> Non-compliant": 1})
+        self.assertEqual(r["composite_score_change"]["mean"], -10.0)
+        self.assertEqual(r["quality_score_change"]["changed"], 0)
+        self.assertIsNone(r["per_report"][0]["agency_token"])               # no organisation named without a key
+        self.assertIsNone(r["status_changes_by_agency"])
+
+    @needs_numpy
+    def test_weights_and_referral_mode(self):
+        from certin_benchmark.analytics.impact import impact
+        weights = dict(load_config().weights, Q4=20, Q7=25)
+        r = impact([self.report], {"weights": weights}, refdata=helpers.refdata(), text_backend=scripted_backend(4),
+                   evaluated_on=helpers.EVAL_DATE)
+        self.assertEqual(r["quality_score_change"]["changed"], 1)
+        self.assertEqual(r["criteria"], {})                                 # weights move Q, not the criteria
+        key = Pseudonymiser(self.dir / "k.key", create=not (self.dir / "k.key").exists())
+        r = impact([self.report], {"referral_mode_checks": ["MC-06", "MC-07"]}, refdata=helpers.refdata(),
+                   text_backend=scripted_backend(4), evaluated_on=helpers.EVAL_DATE,
+                   agency_token=lambda org: key.token("agency", agency_identity(org)) if agency_identity(org) else None)
+        self.assertEqual(r["status_changed"], 1)
+        self.assertEqual(list(r["status_transitions"]), ["Non-compliant -> Pending review"])
+        token = r["per_report"][0]["agency_token"]
+        self.assertRegex(token, r"^AG-")
+        self.assertEqual(r["status_changes_by_agency"], {token: {"Non-compliant -> Pending review": 1}})
+        self.assertIn("MC-06: Fail -> Indeterminate", r["checks_changed"])
+
+    @needs_numpy
+    def test_command(self):
+        proposed = self.dir / "proposed.yaml"
+        proposed.write_text("non_compliance_cap: 40\n")
+        rc, out, err = _run_cli("analytics", "impact", str(self.report), "--proposed", str(proposed),
+                                "--rdp", str(helpers.package()), "--evaluated-on", "2026-08-25")
+        self.assertEqual(rc, 0, err)
+        r = json.loads(out)
+        self.assertIn("without the models", r["note"])
+        self.assertEqual(r["composite_score_change"]["mean"], -10.0)
+        bad = self.dir / "bad.yaml"
+        bad.write_text("weights: {Q1: -5}\n")
+        rc, _, err = _run_cli("analytics", "impact", str(self.report), "--proposed", str(bad),
+                              "--rdp", str(helpers.package()))
+        self.assertEqual(rc, 1)
+        self.assertIn("proposed configuration is not valid", err)
+        rc, _, err = _run_cli("analytics", "impact", str(self.report), "--rdp", str(helpers.package()))
+        self.assertEqual(rc, 1)
+        self.assertIn("give the proposed change", err)
+
+
+# ---- the command line -------------------------------------------------------------------------------------------------
+@needs_numpy
+class Commands(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.d = _tmp()
+        cls.store, cls.key = str(cls.d / "a.sqlite"), str(cls.d / "keys" / "k.key")
+        rc, out, err = _run_cli("analytics", "synth", "--out", str(cls.d / "syn"), "--reports", "400",
+                                "--agencies", "50", "--seed", "2")
+        assert rc == 0, err
+        rc, out, err = _run_cli("analytics", "load", str(cls.d / "syn" / "records"), "--store", cls.store,
+                                "--key", cls.key)
+        assert rc == 0, err
+        cls.loaded = json.loads(out)
+        cls.load_err = err
+
+    def test_load_and_versions(self):
+        self.assertEqual(self.loaded["loaded"], 400)
+        self.assertIn("created a new pseudonymisation key", self.load_err)
+        rc, out, _ = _run_cli("analytics", "versions", "--store", self.store)
+        self.assertEqual(rc, 0)
+        self.assertTrue(json.loads(out)[0]["config_digest"].startswith("synthetic-"))
+
+    def test_baseline_outliers_trends(self):
+        base = str(self.d / "baseline.json")
+        rc, out, err = _run_cli("analytics", "baseline", "--store", self.store, "--out", base)
+        self.assertEqual(rc, 0, err)
+        rc, out, err = _run_cli("analytics", "outliers", "--store", self.store, "--baseline", base,
+                                "--threshold", "60")
+        self.assertEqual(rc, 0, err)
+        r = json.loads(out)
+        self.assertEqual(set(r), {"configuration", "evaluations", "baseline", "reports", "agencies", "checks",
+                                  "co_failures"})
+        rc, out, err = _run_cli("analytics", "trends", "--store", self.store, "--period", "year")
+        self.assertEqual(rc, 0, err)
+        r = json.loads(out)
+        self.assertIn("break 2025-07-25", r["population_trend"]["average_report"]["terms"])
+        rc, out, err = _run_cli("analytics", "trends", "--store", self.store, "--no-breaks")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(out)["population_trend"]["average_report"]["breaks"], [])
+
+    def test_predict(self):
+        rc, out, err = _run_cli("analytics", "predict", "--store", self.store, "--backtest", "--min-train", "150")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("model_beats_baselines", json.loads(out)["backtest"])
+        record = sorted((self.d / "syn" / "records").glob("*.json"))[-1]
+        rc, out, err = _run_cli("analytics", "predict", "--store", self.store, str(record))
+        self.assertEqual(rc, 1)
+        self.assertIn("--key", err)
+        rc, out, err = _run_cli("analytics", "predict", "--store", self.store, "--key", self.key, str(record))
+        self.assertEqual(rc, 0, err)
+        p = json.loads(out)["predictions"][0]
+        self.assertTrue(p["report_token"].startswith("RE-"))
+        self.assertNotIn("note", p)
+
+    def test_errors(self):
+        rc, _, err = _run_cli("analytics", "versions", "--store", str(self.d / "missing.sqlite"))
+        self.assertEqual(rc, 1)
+        self.assertIn("not found", err)
+        rc, _, err = _run_cli("analytics", "baseline", "--store", self.store, "--since", "2031-01-01",
+                              "--out", str(self.d / "b.json"))
+        self.assertEqual(rc, 1)
+        self.assertIn("no usable evaluations", err)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            main(["analytics", "load", str(self.d), "--store", self.store])          # --key is required
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            main(["analytics", "trends", "--store", self.store, "--since", "2025-13-01"])
+
+
+if __name__ == "__main__":
+    unittest.main()

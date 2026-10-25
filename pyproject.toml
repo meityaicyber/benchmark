@@ -19,6 +19,8 @@ dependencies = [
 # preparation host only: conversion of CERT-In's PDF list of empanelled organisations and of its register of their
 # identifiers and validity (spreadsheet)
 preparation = ["pdfplumber>=0.10", "openpyxl>=3.1"]
+# analyses over many evaluation records (certin-benchmark analytics): peer baselines, anomalies, trends, prediction
+analytics = ["numpy>=1.24"]
 
 [project.scripts]
 certin-benchmark = "certin_benchmark.cli:main"

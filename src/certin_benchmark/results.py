@@ -124,6 +124,7 @@ class EvaluationRecord:
     report_structure: list[Any] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     auditing_organisation: dict[str, Any] = field(default_factory=dict)
+    report_profile: dict[str, Any] = field(default_factory=dict)     # dates, types, sector, size (profile.py)
 
     @property
     def checks_not_met(self) -> list[dict[str, Any]]:

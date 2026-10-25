@@ -490,6 +490,9 @@ def build_parser() -> argparse.ArgumentParser:
     pm.add_argument("--split", help="the split written by calibrate split: the mark is fitted on the calibration "
                                     "portion and its agreement measured on the held-out portion")
     cal.set_defaults(fn=cmd_calibrate)
+
+    from .analytics import commands as analytics_commands
+    analytics_commands.register(sub)
     return p
 
 
