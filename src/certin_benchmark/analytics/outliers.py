@@ -85,7 +85,7 @@ def agency_levels(rows: list[dict], threshold: float | None = None) -> dict:
     for token, g in pooled["groups"].items():
         n = g["n"]
         sd_mean = math.sqrt(s2 / n + tau2)              # spread of an agency mean around mu, over-dispersion allowed
-        z = (g["mean"] - mu) / sd_mean
+        z = (g["mean"] - mu) / sd_mean if sd_mean > 0 else 0.0
         entry = {
             "agency_token": token, "reports": n,
             "mean_score": round(float(from_logit(g["mean"])), 2),
@@ -98,7 +98,8 @@ def agency_levels(rows: list[dict], threshold: float | None = None) -> dict:
                       "above 99.8% limit" if z > Z998 else "above 95% limit" if z > Z95 else "within limits",
         }
         if t_logit is not None:
-            entry["probability_below_threshold"] = round(NORMAL.cdf((t_logit - g["estimate"]) / g["se"]), 4)
+            entry["probability_below_threshold"] = (round(NORMAL.cdf((t_logit - g["estimate"]) / g["se"]), 4)
+                                                    if g["se"] > 0 else float(g["estimate"] < t_logit))
         agencies.append(entry)
     agencies.sort(key=lambda e: e["estimate"])
     return {"population_mean": round(float(from_logit(mu)), 2), "between_agency_sd_logit": round(math.sqrt(tau2), 4),

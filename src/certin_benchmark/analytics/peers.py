@@ -63,7 +63,14 @@ class Baseline:
 
     @classmethod
     def load(cls, path: str | Path) -> "Baseline":
-        return cls(**json.loads(Path(path).read_text()))
+        from ..errors import OperatorError
+        try:
+            base = cls(**json.loads(Path(path).read_text()))
+        except (OSError, ValueError, TypeError) as exc:
+            raise OperatorError(f"{path} is not a baseline written by analytics baseline ({exc})") from None
+        if not isinstance(base.groups, dict) or "all reports" not in base.groups:
+            raise OperatorError(f"{path} is not a baseline written by analytics baseline (no group of all reports)")
+        return base
 
     def group_for(self, row: dict) -> tuple[str, dict]:
         for level in LEVELS:

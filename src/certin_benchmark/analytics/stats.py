@@ -28,15 +28,74 @@ def from_logit(z) -> np.ndarray:
 
 
 # ---- summaries --------------------------------------------------------------------------------------------------
+def _betacf(a: float, b: float, x: float) -> float:
+    """Continued fraction of the incomplete beta function (modified Lentz's method)."""
+    tiny = 1e-300
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c, d = 1.0, 1.0 - qab * x / qap
+    d = 1.0 / (d if abs(d) > tiny else tiny)
+    h = d
+    for m in range(1, 300):
+        m2 = 2 * m
+        for aa in (m * (b - m) * x / ((qam + m2) * (a + m2)), -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))):
+            d = 1.0 + aa * d
+            d = 1.0 / (d if abs(d) > tiny else tiny)
+            c = 1.0 + aa / c
+            c = c if abs(c) > tiny else tiny
+            h *= d * c
+        if abs(d * c - 1.0) < 1e-15:
+            break
+    return h
+
+
+def betainc(a: float, b: float, x: float) -> float:
+    """The regularised incomplete beta function I_x(a, b)."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    front = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log1p(-x))
+    if x < (a + 1.0) / (a + b + 2.0):
+        return front * _betacf(a, b, x) / a
+    return 1.0 - front * _betacf(b, a, 1.0 - x) / b
+
+
+def t_cdf(t: float, df: float) -> float:
+    """The distribution function of Student's t with df degrees of freedom."""
+    tail = 0.5 * betainc(df / 2.0, 0.5, df / (df + t * t))
+    return 1.0 - tail if t >= 0 else tail
+
+
+def t_quantile(p: float, df: float) -> float:
+    """The p quantile of Student's t with df degrees of freedom (by bisection on the distribution function)."""
+    if not 0.0 < p < 1.0:
+        raise ValueError("p must lie in (0, 1)")
+    if p < 0.5:
+        return -t_quantile(1.0 - p, df)
+    lo, hi = 0.0, 1.0
+    while t_cdf(hi, df) < p:
+        lo, hi = hi, hi * 2.0
+    for _ in range(200):
+        mid = (lo + hi) / 2.0
+        if t_cdf(mid, df) < p:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo < 1e-12 * max(1.0, hi):
+            break
+    return (lo + hi) / 2.0
+
+
 def mean_ci(x: Sequence[float]) -> tuple[float, float, float] | None:
-    """Mean and normal 95% interval; None for an empty sample (the interval is the mean itself for one value)."""
+    """Mean and its 95% interval from Student's t; None for an empty sample (the interval is the mean itself for
+    one value)."""
     a = np.asarray(x, dtype=float)
     if a.size == 0:
         return None
     m = float(a.mean())
     if a.size < 2:
         return m, m, m
-    half = Z95 * float(a.std(ddof=1)) / math.sqrt(a.size)
+    half = t_quantile(0.975, a.size - 1) * float(a.std(ddof=1)) / math.sqrt(a.size)
     return m, m - half, m + half
 
 
@@ -88,6 +147,7 @@ def pooled_levels(groups: dict[str, Sequence[float]]) -> dict:
     multi = [np.asarray(groups[k], dtype=float) for k in keys if len(groups[k]) > 1]
     dof = sum(len(v) - 1 for v in multi)
     s2 = float(sum(((v - v.mean()) ** 2).sum() for v in multi) / dof) if dof > 0 else float(np.var(means)) or 1.0
+    s2 = max(s2, 1e-6)          # identical values (scores clipped at the ends of the scale) leave no spread
     w = n / s2
     ybar_w = float((w * means).sum() / w.sum()) if keys else float("nan")
     k = len(keys)

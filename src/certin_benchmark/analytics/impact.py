@@ -30,12 +30,15 @@ def _checks(rec: dict) -> dict[str, str]:
     return {c["id"]: c["result"] for c in rec.get("mandatory_checks") or []}
 
 
-def compare(now: dict, new: dict, agency_token=None) -> dict:
-    """The differences between two evaluation records of one report. agency_token(organisation) gives the
-    auditing organisation's pseudonymous token; without it the organisation is left out."""
+def compare(now: dict, new: dict, tokens=None) -> dict:
+    """The differences between two evaluation records of one report. tokens(record) gives the pseudonymous tokens
+    of the report and its auditing organisation, which then stand in place of the report's identifier; without it
+    the report is named by its identifier and the organisation is left out, so that no output links a token to the
+    identity it stands for."""
+    report_token, agency_token = tokens(now) if tokens else (None, None)
     out: dict[str, Any] = {
-        "report_id": now.get("report_id"),
-        "agency_token": agency_token(now.get("auditing_organisation") or {}) if agency_token else None,
+        "report": report_token if tokens else now.get("report_id"),
+        "agency_token": agency_token,
         "status": [now.get("compliance_status"), new.get("compliance_status")],
         "quality_score": [now.get("quality_score"), new.get("quality_score")],
         "composite_score": [now.get("composite_score"), new.get("composite_score")],
@@ -51,11 +54,11 @@ def compare(now: dict, new: dict, agency_token=None) -> dict:
 def impact(reports: list[str | Path], proposed: dict | None, config: str | Path | None = None,
            curated: str | Path | None = None, proposed_curated: str | Path | None = None, refdata=None,
            text_backend=None, vision_backend=None, evaluated_on: _dt.date | None = None, images_for=None,
-           agency_token=None) -> dict:
+           tokens=None) -> dict:
     """Evaluate each report under the current configuration and under the proposed one: the current configuration
     with `proposed` merged into it (the same form as suite.yaml, holding only what changes), and the curated lists
     of `proposed_curated` where a change to the lists is proposed. images_for(path) may give the ImageResolver of a
-    report. agency_token(organisation) gives the pseudonymous token of the auditing organisation (the analytics
+    report. tokens(record) gives the pseudonymous tokens of a report and its auditing organisation (the analytics
     store's), so that changes of status can be counted by agency; without it no organisation is named."""
     from ..engine import BenchmarkEngine
     cfg_now = load_config(config, curated)
@@ -68,7 +71,7 @@ def impact(reports: list[str | Path], proposed: dict | None, config: str | Path 
         images = images_for(path) if images_for else None
         now = e_now.evaluate(data, evaluated_on=evaluated_on, images=images).to_dict()
         new = e_new.evaluate(data, evaluated_on=evaluated_on, images=images).to_dict()
-        rows.append(compare(now, new, agency_token))
+        rows.append(compare(now, new, tokens))
     transitions = Counter(f"{a} -> {b}" for a, b in (r["status"] for r in rows))
 
     def deltas(key: str) -> dict | None:
@@ -88,7 +91,7 @@ def impact(reports: list[str | Path], proposed: dict | None, config: str | Path 
                    "mean_change": round(float(np.mean(d)), 3) if d else None}
     by_agency: dict[str, Counter] = {}
     for r in rows:
-        if agency_token and r["status"][0] != r["status"][1]:
+        if tokens and r["status"][0] != r["status"][1]:
             by_agency.setdefault(r["agency_token"] or "not identified", Counter())[
                 f"{r['status'][0]} -> {r['status'][1]}"] += 1
     return {
@@ -101,7 +104,7 @@ def impact(reports: list[str | Path], proposed: dict | None, config: str | Path 
         "composite_score_change": deltas("composite_score"),
         "criteria": crit,
         "checks_changed": dict(sorted(checks.items())),
-        "status_changes_by_agency": {a: dict(c) for a, c in sorted(by_agency.items())} if agency_token else None,
+        "status_changes_by_agency": {a: dict(c) for a, c in sorted(by_agency.items())} if tokens else None,
         "needing_the_model": sum(1 for r in rows if r["needs_model"]),
         "per_report": rows,
     }

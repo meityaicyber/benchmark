@@ -28,6 +28,9 @@ def _store(a, key: bool = False, create: bool = False):
         raise OperatorError("this command needs the pseudonymisation key (--key)")
     store = AnalyticsStore(a.store, a.key if key else None, create_key=create)
     _OPEN.append(store)
+    if store.pseudo is not None and store.pseudo.created:
+        print(f"warning: created a new pseudonymisation key at {a.key}; keep it with the store and never replace "
+              "it, or every organisation will receive a new token", file=sys.stderr)
     return store
 
 
@@ -38,6 +41,14 @@ def _rows(store, a):
         raise OperatorError("no usable evaluations for this configuration and window (evaluations without a report "
                             "date or a quality score, and provisional ones unless --include-provisional, are left out)")
     return rows
+
+
+def _part(fn, *args, **kw):
+    """One part of an output; a part the evaluations cannot support says why instead of stopping the others."""
+    try:
+        return fn(*args, **kw)
+    except ValueError as exc:
+        return {"not_computed": str(exc)}
 
 
 def run(a) -> int:
@@ -64,9 +75,6 @@ def _run(a) -> int:
     if cmd == "load":
         store = _store(a, key=True, create=True)
         result = store.load_paths(a.records)
-        if store.pseudo.created:
-            print(f"warning: created a new pseudonymisation key at {a.key}; keep it with the store and never replace "
-                  "it, or every organisation will receive a new token", file=sys.stderr)
         result["configurations"] = store.versions()
         _emit(result, None)
         return 0
@@ -88,8 +96,16 @@ def _run(a) -> int:
         from .peers import Baseline, build_baseline
         store = _store(a)
         rows = _rows(store, a)
-        base = Baseline.load(a.baseline) if a.baseline else build_baseline(rows, config_digest=rows[0]["config_digest"])
-        _emit({"configuration": rows[0]["config_digest"], "evaluations": len(rows),
+        digest = rows[0]["config_digest"]
+        if a.baseline:
+            base = Baseline.load(a.baseline)
+            if base.config_digest != digest:
+                raise OperatorError(f"{a.baseline} was built from configuration {base.config_digest[:16]}, and the "
+                                    f"evaluations analysed are of configuration {digest[:16]}: scores of different "
+                                    "configurations are not comparable (build a baseline of this configuration)")
+        else:
+            base = build_baseline(rows, config_digest=digest)
+        _emit({"configuration": digest, "evaluations": len(rows),
                "baseline": a.baseline or "built from the same evaluations",
                "reports": report_outliers(rows, base), "agencies": agency_levels(rows, a.threshold),
                "checks": check_monitor(rows), "co_failures": co_failures(rows)[:a.top]}, a.out)
@@ -99,52 +115,75 @@ def _run(a) -> int:
         store = _store(a)
         rows = _rows(store, a)
         breaks = [] if a.no_breaks else (a.breaks or [GUIDELINES_DATE])
-        model = TrendModel(breaks, within_agency=True).fit(rows)
-        _emit({"configuration": rows[0]["config_digest"], "evaluations": len(rows),
-               "by_period": by_period(rows, a.period), "population_trend": population_trend(rows, breaks),
-               "agency_trends": agency_trends(rows, model), "agency_changes": agency_changes(rows, model)}, a.out)
-        return 0
-    if cmd == "predict":
-        from .predict import ExpectedScoreModel, backtest
-        store = _store(a, key=bool(a.records))
-        rows = _rows(store, a)
-        out: dict = {"configuration": rows[0]["config_digest"], "trained_on": len(rows)}
-        if a.backtest:
-            out["backtest"] = backtest(rows, min_train=a.min_train, report_features=not a.pre_audit)
-        if a.records:
-            model = ExpectedScoreModel(report_features=not a.pre_audit).fit(rows)
-            out["model"] = model.describe()
-            new = []
-            for path in a.records:
-                try:
-                    rec = json.loads(Path(path).read_text())
-                except (OSError, ValueError) as exc:
-                    raise OperatorError(f"{path}: {exc}") from None
-                if not isinstance(rec, dict):
-                    raise OperatorError(f"{path} is not an evaluation record")
-                row = store.row(rec)
-                if not row.get("report_date"):
-                    raise OperatorError(f"{path}: the record gives no report date (report_profile), so the report "
-                                        "cannot be placed in time")
-                new.append((path, row))
-            preds = model.predict([r for _, r in new])
-            out["predictions"] = []
-            for (path, r), p in zip(new, preds):
-                p = {k: v for k, v in p.items() if not k.startswith("_")}
-                entry = {"record": str(path), "report_token": r["report_token"], "agency_token": r["agency_token"],
-                         "report_date": r["report_date"], "quality_score": r.get("quality_score"),
-                         "compliance_status": r.get("compliance_status"), **p}
-                if r["config_digest"] != rows[0]["config_digest"]:
-                    entry["note"] = ("evaluated under another configuration of the Suite than the records the model "
-                                     "learnt from: its quality score is not comparable with the expected score")
-                out["predictions"].append(entry)
-        if not a.backtest and not a.records:
-            raise OperatorError("give evaluation records to predict for, or --backtest")
+        model = _part(lambda: TrendModel(breaks, within_agency=True).fit(rows))
+        out = {"configuration": rows[0]["config_digest"], "evaluations": len(rows),
+               "by_period": by_period(rows, a.period), "population_trend": _part(population_trend, rows, breaks)}
+        if isinstance(model, dict):
+            out["agency_trends"] = out["agency_changes"] = model
+        else:
+            out["agency_trends"] = agency_trends(rows, model)
+            out["agency_changes"] = agency_changes(rows, model)
         _emit(out, a.out)
         return 0
+    if cmd == "predict":
+        return _predict(a)
     if cmd == "impact":
         return _impact(a)
     raise OperatorError(f"unknown analytics command {cmd}")
+
+
+def _predict(a) -> int:
+    from .predict import ExpectedScoreModel, backtest
+    if not a.backtest and not a.records:
+        raise OperatorError("give evaluation records to predict for, or --backtest")
+    store = _store(a, key=bool(a.records))
+    rows = _rows(store, a)
+    digest = rows[0]["config_digest"]
+    out: dict = {"configuration": digest, "evaluations": len(rows)}
+    if a.backtest:
+        out["backtest"] = backtest(rows, min_train=a.min_train, report_features=not a.pre_audit)
+    if a.records:
+        new = []
+        for i, path in enumerate(a.records, 1):
+            try:
+                rec = json.loads(Path(path).read_text())
+            except (OSError, ValueError) as exc:
+                raise OperatorError(f"{path}: {exc}") from None
+            row = store.row(rec)
+            if not row.get("report_date"):
+                raise OperatorError(f"{path}: the record gives no report date (report_profile), so the report "
+                                    "cannot be placed in time")
+            new.append((i, row))
+        # each report is predicted from the evaluations dated before it, never from itself or from later reports
+        models: dict[str, ExpectedScoreModel] = {}
+        out["predictions"] = []
+        for i, row in new:
+            day = row["report_date"]
+            if day not in models:
+                train = [r for r in rows if r["report_date"] < day]
+                try:
+                    models[day] = ExpectedScoreModel(report_features=not a.pre_audit).fit(train)
+                except ValueError as exc:
+                    models[day] = None
+                    out.setdefault("not_predicted", {})[day] = f"{exc} dated before {day}"
+            model = models[day]
+            entry = {"record": i, "report_token": row["report_token"], "agency_token": row["agency_token"],
+                     "report_date": day, "quality_score": row.get("quality_score"),
+                     "compliance_status": row.get("compliance_status")}
+            if model is not None:
+                # leave out an earlier evaluation of this same report, if the store holds one
+                if any(r["report_token"] == row["report_token"] for r in rows if r["report_date"] < day):
+                    train = [r for r in rows if r["report_date"] < day and r["report_token"] != row["report_token"]]
+                    model = ExpectedScoreModel(report_features=not a.pre_audit).fit(train)
+                p = model.predict([row])[0]
+                entry.update({k: v for k, v in p.items() if not k.startswith("_")})
+                entry["model"] = {"trained_on": model.trained_on, "trained_to": model.trained_to}
+                if row["config_digest"] != digest:
+                    entry["note"] = ("evaluated under another configuration of the Suite than the records the model "
+                                     "learnt from: its quality score is not comparable with the expected score")
+            out["predictions"].append(entry)
+    _emit(out, a.out)
+    return 0
 
 
 def _impact(a) -> int:
@@ -156,24 +195,30 @@ def _impact(a) -> int:
     from ..refdata.package import latest_package
     from ..refdata.store import ReferenceData
     from .impact import impact
-    proposed = yaml.safe_load(Path(a.proposed).read_text()) if a.proposed else {}
-    if not proposed and not a.proposed_curated:
-        raise OperatorError("give the proposed change: --proposed <changes.yaml> and/or --proposed-curated <folder>")
+    try:
+        proposed = yaml.safe_load(Path(a.proposed).read_text()) if a.proposed else {}
+    except yaml.YAMLError as exc:
+        raise OperatorError(f"{a.proposed} is not valid YAML: {exc}") from None
     if proposed is not None and not isinstance(proposed, dict):
         raise OperatorError(f"{a.proposed} must hold a mapping in the form of suite.yaml")
+    if not proposed and not a.proposed_curated:
+        raise OperatorError("give the proposed change: --proposed <changes.yaml> and/or --proposed-curated <folder>")
     rd_path = Path(a.rdp) if a.rdp else (latest_package(a.rdp_store) if a.rdp_store else None)
     if a.rdp_store and rd_path is None:
         raise OperatorError(f"no Reference Data Package in {a.rdp_store}")
     if rd_path is not None and not (rd_path / "manifest.json").is_file():
         raise OperatorError(f"{rd_path} is not a Reference Data Package: it has no manifest.json")
-    agency_token = None
-    if a.key:
-        from .store import Pseudonymiser, agency_identity
-        pseudo = Pseudonymiser(a.key)
+    tokens = None
+    if a.key or a.store:
+        if not (a.key and a.store):
+            raise OperatorError("give --store with --key: the key is checked against the store's, so that the "
+                                "tokens are those of the store")
+        from .store import agency_identity, report_identity
+        pseudo = _store(a, key=True).pseudo
 
-        def agency_token(org: dict) -> str | None:
-            identity = agency_identity(org)
-            return pseudo.token("agency", identity) if identity else None
+        def tokens(rec: dict) -> tuple[str, str | None]:
+            org = agency_identity(rec.get("auditing_organisation") or {})
+            return pseudo.token("report", report_identity(rec)), pseudo.token("agency", org) if org else None
     refdata = ReferenceData(rd_path) if rd_path else None
     try:
         curated = a.curated or (refdata.curated_dir if refdata is not None and refdata.curated_dir.exists() else None)
@@ -186,7 +231,7 @@ def _impact(a) -> int:
         result = impact(a.reports, proposed, a.config, curated, a.proposed_curated, refdata, text, vision,
                         _date(a.evaluated_on),
                         images_for=lambda p: ImageResolver.for_report(p, a.assets_dir, None, a.deep_storage),
-                        agency_token=agency_token)
+                        tokens=tokens)
     finally:
         if refdata is not None:
             refdata.close()
@@ -261,7 +306,8 @@ def register(sub) -> None:
     p = s.add_parser("predict", help="E: expected quality score and probability of non-compliance; --backtest checks "
                                      "the model against simple baselines")
     store_args(p, key=True)
-    p.add_argument("records", nargs="*", help="evaluation records of new reports to predict for (needs --key)")
+    p.add_argument("records", nargs="*", help="evaluation records of new reports to predict for (needs --key); each "
+                                              "is predicted from the evaluations dated before it")
     p.add_argument("--backtest", action="store_true")
     p.add_argument("--min-train", type=int, default=200)
     p.add_argument("--pre-audit", action="store_true", help="use only what is known before the audit (engagement "
@@ -284,6 +330,9 @@ def register(sub) -> None:
     p.add_argument("--assets-dir")
     p.add_argument("--deep-storage")
     p.add_argument("--evaluated-on", type=_iso_date)
-    p.add_argument("--key", help="the analytics store's pseudonymisation key: changes of status are then counted by "
-                                 "agency token (without it no organisation is named)")
+    p.add_argument("--store", help="the analytics store whose key --key is (both needed to name reports and "
+                                   "agencies by their tokens)")
+    p.add_argument("--key", help="the store's pseudonymisation key: reports and agencies are then named by their "
+                                 "tokens, and changes of status counted by agency (without it no organisation is "
+                                 "named)")
     p.add_argument("--out")

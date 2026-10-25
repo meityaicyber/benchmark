@@ -63,16 +63,43 @@ def by_period(rows: list[dict], period: str = "quarter") -> list[dict]:
     return out
 
 
+def _independent(X: np.ndarray, tol: float = 1e-7) -> list[int]:
+    """The columns of X, in order, that are not linear combinations of the columns kept before them (Gram-Schmidt
+    with re-orthogonalisation): a term that cannot be told apart from the others in these reports is left out
+    rather than given an arbitrary share of them."""
+    basis: list[np.ndarray] = []
+    keep = []
+    for j in range(X.shape[1]):
+        col = X[:, j].astype(float)
+        norm = float(np.linalg.norm(col))
+        if norm == 0.0:
+            continue
+        r = col.copy()
+        for _ in range(2):
+            for q in basis:
+                r -= (q @ r) * q
+        if float(np.linalg.norm(r)) > tol * norm:
+            basis.append(r / float(np.linalg.norm(r)))
+            keep.append(j)
+    return keep
+
+
 class TrendModel:
     """The population model: logit quality ~ time + known breaks + engagement type + sector + log(1 + assets).
 
     within_agency adds a level for each agency with at least `agency_min` reports: the time terms then measure how
     scores change within agencies, rather than how the average report changes, which also moves when agencies with
-    different levels submit more or fewer reports, or when one large agency changes."""
+    different levels submit more or fewer reports, or when one large agency changes.
+
+    A term the reports cannot estimate is left out and named in the summary: a break with fewer than `min_level`
+    reports on either side (for example a window that lies wholly after it), and any term that the others determine
+    (a size that does not vary, a sector all of whose reports come from one agency)."""
+
+    MIN_REPORTS = 20
 
     def __init__(self, breaks: Iterable[str] = (GUIDELINES_DATE,), adjust: bool = True, min_level: int = 10,
                  within_agency: bool = False, agency_min: int = 5):
-        self.breaks = [str(b) for b in breaks]
+        self.breaks = sorted({str(b)[:10] for b in breaks})
         self.adjust = adjust
         self.min_level = min_level
         self.within_agency = within_agency
@@ -83,34 +110,60 @@ class TrendModel:
         kept = [k for k, n in counts.most_common() if n >= minimum]
         return kept[1:]                                        # the most common level is the reference
 
-    def design(self, rows: list[dict]) -> np.ndarray:
+    def _full(self, rows: list[dict]) -> tuple[np.ndarray, list[str]]:
         cols = [np.ones(len(rows)), np.array([(_d(r["report_date"]) - self.origin).days / 365.25 for r in rows])]
-        for b in self.breaks:
+        names = ["intercept", "per_year"]
+        for b in self.used_breaks:
             cols.append(np.array([1.0 if r["report_date"] >= b else 0.0 for r in rows]))
+            names.append(f"break {b}")
         for field, levels in self.levels.items():
             for lv in levels:
                 cols.append(np.array([1.0 if (r.get(field) or "not stated") == lv else 0.0 for r in rows]))
+                names.append(f"{field}={lv}")
         if self.adjust:
             cols.append(np.log1p(np.array([float(r.get("assets") or 0) for r in rows])))
-        return np.column_stack(cols)
+            names.append("log(1 + assets)")
+        return np.column_stack(cols), names
+
+    def design(self, rows: list[dict]) -> np.ndarray:
+        return self._full(rows)[0][:, self.keep]
 
     def names(self) -> list[str]:
-        out = ["intercept", "per_year"] + [f"break {b}" for b in self.breaks]
-        for field, levels in self.levels.items():
-            out += [f"{field}={lv}" for lv in levels]
-        if self.adjust:
-            out.append("log(1 + assets)")
-        return out
+        return list(self.kept_names)
 
     def fit(self, rows: list[dict]) -> "TrendModel":
+        if len(rows) < self.MIN_REPORTS:
+            raise ValueError(f"too few evaluations for a trend ({len(rows)}; at least {self.MIN_REPORTS} needed)")
         self.origin = min(_d(r["report_date"]) for r in rows)
+        self.not_estimable: dict[str, str] = {}
+        self.used_breaks = []
+        for b in self.breaks:
+            after = sum(1 for r in rows if r["report_date"] >= b)
+            if min(after, len(rows) - after) < self.min_level:
+                self.not_estimable[f"break {b}"] = (f"{len(rows) - after} reports before it and {after} on or after "
+                                                    f"it; at least {self.min_level} are needed on each side")
+            else:
+                self.used_breaks.append(b)
         self.levels = {f: self._levels(rows, f, self.min_level) for f in ("engagement_type", "sector")} \
             if self.adjust else {}
         if self.within_agency:
             self.levels["agency_token"] = self._levels(rows, "agency_token", self.agency_min)
-        X = self.design(rows)
+        X, names = self._full(rows)
+        self.keep = _independent(X)
+        if 0 not in self.keep or 1 not in self.keep:
+            raise ValueError("the reports span a single day, so no trend can be estimated")
+        dropped_agencies = 0
+        for j, name in enumerate(names):
+            if j not in self.keep:
+                if name.startswith("agency_token="):
+                    dropped_agencies += 1
+                else:
+                    self.not_estimable[name] = "not separable from the other terms in these reports"
+        if dropped_agencies:
+            self.not_estimable["agency levels"] = f"{dropped_agencies} not separable from the other terms"
+        self.kept_names = [names[j] for j in self.keep]
         y = to_logit([r["quality_score"] for r in rows])
-        self.result = ols(X, y)
+        self.result = ols(X[:, self.keep], y)
         self.rows = rows
         self.y = y
         return self
@@ -125,7 +178,7 @@ class TrendModel:
         z_bar = float(np.mean(self.y))
         slope_q = 100 * math.exp(-z_bar) / (1 + math.exp(-z_bar)) ** 2      # dQ/dz at the average report
         terms = {}
-        for name, b, s in zip(self.names(), beta, se):
+        for name, b, s in zip(self.kept_names, beta, se):
             if name == "intercept" or name.startswith("agency_token="):
                 continue
             terms[name] = {"logit": round(float(b), 4), "interval": [round(float(b - Z95 * s), 4),
@@ -136,10 +189,10 @@ class TrendModel:
         if self.within_agency:
             adjusted.append(f"agency (agencies with {self.agency_min} or more reports)")
         return {"reports": len(self.rows), "from": self.origin.isoformat(),
-                "to": max(r["report_date"] for r in self.rows), "breaks": self.breaks,
+                "to": max(r["report_date"] for r in self.rows), "breaks": self.used_breaks,
                 "measures": "change within agencies" if self.within_agency else "change of the average report",
                 "adjusted_for": adjusted, "residual_sd_logit": round(math.sqrt(self.result["sigma2"]), 4),
-                "terms": terms}
+                "terms": terms, "not_estimable": self.not_estimable}
 
 
 def population_trend(rows: list[dict], breaks: Iterable[str] = (GUIDELINES_DATE,), adjust: bool = True) -> dict:
@@ -215,10 +268,19 @@ def agency_trends(rows: list[dict], model: TrendModel | None = None, min_reports
 
 
 def agency_changes(rows: list[dict], model: TrendModel | None = None, min_reports: int = 12,
-                   min_segment: int = 5) -> list[dict]:
-    """Changes in an agency's level relative to the population: for each agency with at least min_reports
-    reports, the dates where binary segmentation of its residuals finds a change, with the level before and after
-    (score points at the agency's average), and the dates a CUSUM would have raised an alarm."""
+                   min_segment: int = 5, burn_in: int = 8, h: float = 5.0) -> list[dict]:
+    """Changes in an agency's level relative to the population, for each agency with at least min_reports reports:
+
+    * the dates where binary segmentation of its residuals, in date order, finds a change, with the level before
+      and after (score points at the agency's average);
+    * the dates a two-sided CUSUM (allowance 0.5 and threshold h, in residual standard deviations) raises an
+      alarm. Its target is the mean of the agency's first burn_in reports and, after each alarm, the mean of the
+      burn_in reports that follow it, as a monitor is reset to the new level once a change has been acted on. The
+      CUSUM is run for every such agency, not only where segmentation finds a change. The residuals come from a
+      model fitted to all the reports, so this shows where a monitoring rule would have signalled, not what live
+      monitoring would have known at the time.
+
+    Agencies with neither a change nor an alarm are left out."""
     model = model or TrendModel(within_agency=True).fit(rows)
     resid = model.residuals(rows)
     by: dict[str, list[tuple[str, float, float]]] = defaultdict(list)
@@ -228,24 +290,30 @@ def agency_changes(rows: list[dict], model: TrendModel | None = None, min_report
     sigma = math.sqrt(model.result["sigma2"])
     out = []
     for token, pts in by.items():
-        if len(pts) < min_reports:
+        if len(pts) < max(min_reports, burn_in + 1):
             continue
-        pts.sort()
+        pts.sort(key=lambda p: p[0])                          # date order; reports of one date keep their order
         e = np.array([p[1] for p in pts])
-        points = binary_segmentation(e, min_size=min_segment, sigma=sigma)
-        if not points:
-            continue
-        bounds = [0, *points, len(pts)]
         z_bar = float(to_logit(np.mean([p[2] for p in pts])))
         per_point = 100 * math.exp(-z_bar) / (1 + math.exp(-z_bar)) ** 2
+        points = binary_segmentation(e, min_size=min_segment, sigma=sigma)
+        bounds = [0, *points, len(pts)]
         changes = []
         for j, cp in enumerate(points):
             before, after = e[bounds[j]:cp], e[cp:bounds[j + 2]]
             changes.append({"from_date": pts[cp][0], "reports_before": before.size, "reports_after": after.size,
                             "shift_logit": round(float(after.mean() - before.mean()), 4),
                             "shift_score_points": round(float(after.mean() - before.mean()) * per_point, 2)})
-        first = e[:points[0]]
-        alarms = cusum(e, float(first.mean()), sigma)
-        out.append({"agency_token": token, "reports": len(pts), "changes": changes,
-                    "cusum_alarms": [{"date": pts[a["index"]][0], "direction": a["direction"]} for a in alarms]})
+        alarms = []
+        start = 0
+        while sigma > 0 and start + burn_in < len(pts):
+            target = float(e[start:start + burn_in].mean())
+            found = cusum(e[start + burn_in:], target, sigma, h=h)
+            if not found:
+                break
+            at = start + burn_in + found[0]["index"]
+            alarms.append({"date": pts[at][0], "direction": found[0]["direction"]})
+            start = at + 1                                     # reset: the next burn_in reports give the new level
+        if changes or alarms:
+            out.append({"agency_token": token, "reports": len(pts), "changes": changes, "cusum_alarms": alarms})
     return out

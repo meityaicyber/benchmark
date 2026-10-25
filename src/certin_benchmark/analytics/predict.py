@@ -264,14 +264,18 @@ def backtest(rows: list[dict], min_train: int = 200, lam: float | None = None, n
         for r, p in zip(test, model.predict(test)):
             y = float(to_logit(r["quality_score"]))
             y_nc = _non_compliant(r)
-            hist = sorted(by_agency.get(r.get("agency_token") or "", []))
+            hist = by_agency.get(r.get("agency_token") or "", [])
             a_mean = float(np.mean([h[1] for h in hist])) if hist else mu0
-            a_last = hist[-1][1] if hist else mu0
+            last_day = max((h[0] for h in hist), default=None)
+            a_last = float(np.mean([h[1] for h in hist if h[0] == last_day])) if hist else mu0   # its latest date
             a_rate = (sum(h[2] for h in hist) + nc_rate * 2) / (len(hist) + 2) if hist else nc_rate   # smoothed
             pred["model"].append((p["_mu"], p["_sd"], y, p["probability_non_compliant"], y_nc))
             pred["population_mean"].append((mu0, sd0, y, nc_rate, y_nc))
             pred["agency_mean"].append((a_mean, sd0, y, a_rate, y_nc))
             pred["agency_last"].append((a_last, sd0, y, a_rate, y_nc))
+    if not folds:
+        raise ValueError(f"no quarter has {min_train} earlier evaluations to learn from; lower --min-train (now "
+                         f"{min_train}) or wait for more evaluations")
     results = {}
     for name, items in pred.items():
         mu = np.array([i[0] for i in items])

@@ -42,14 +42,14 @@ ENGAGEMENTS = {   # share of reports, effect on quality (logit), modules selecte
     "Cloud Security Testing": (0.06, -0.20, ["cloud"]),
     "Red Team Assessment": (0.03, 0.25, []),
 }
-SECTORS = {   # share, effect on quality (logit), types of entity
-    "Government": (0.45, -0.05, ["Central Ministry/Department", "State Government Department"]),
-    "Banking": (0.15, 0.20, ["PSU", "Private Sector"]),
+SECTORS = {   # share, effect on quality (logit), types of entity (names from the controlled lists)
+    "Government": (0.45, -0.05, ["Central Ministry/Department", "State Government", "Attached or Subordinate Office"]),
+    "Banking": (0.15, 0.20, ["PSU", "Private"]),
     "Power": (0.08, -0.10, ["PSU"]),
-    "Telecom": (0.07, 0.05, ["Private Sector", "PSU"]),
-    "Healthcare": (0.07, -0.10, ["State Government Department", "Private Sector"]),
-    "Education": (0.08, -0.15, ["Autonomous Body"]),
-    "Other": (0.10, 0.00, ["Private Sector"]),
+    "Telecom": (0.07, 0.05, ["Private", "PSU"]),
+    "Health": (0.07, -0.10, ["State Government", "Private"]),
+    "Education": (0.08, -0.15, ["Other"]),
+    "Other": (0.10, 0.00, ["Private"]),
 }
 APPLICATION_TYPES = {"Web Application Security Audit", "Mobile Application Security Audit", "API Security Audit"}
 CRITERION_OFFSET = {"Q1": 0.4, "Q2": -0.2, "Q3": 0.3, "Q4": 0.0, "Q5": 0.15, "Q6": -0.1, "Q7": -0.3, "Q8": 0.05}

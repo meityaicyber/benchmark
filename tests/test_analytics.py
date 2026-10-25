@@ -20,7 +20,7 @@ from pathlib import Path
 import helpers  # noqa: F401  (path setup)
 from staging import scripted_backend
 
-from certin_benchmark.analytics.store import AnalyticsStore, Pseudonymiser, agency_identity
+from certin_benchmark.analytics.store import AnalyticsStore, Pseudonymiser, agency_identity, report_identity
 from certin_benchmark.cli import main
 from certin_benchmark.config import load_config
 from certin_benchmark.errors import OperatorError
@@ -38,7 +38,7 @@ def _tmp() -> Path:
     return Path(tempfile.mkdtemp(prefix="certin-analytics-"))
 
 
-def _record(report_id: str, digest: str = "cfg-a", ambak: str | None = "2099000001", q: float = 70.0,
+def _record(report_id: str, digest: str = "cfa0000000", ambak: str | None = "2099000001", q: float = 70.0,
             status: str = "Compliant", date: str | None = "2025-01-01", provisional: bool = False) -> dict:
     """A minimal evaluation record of the Suite, with the fields the store reads."""
     return {
@@ -139,25 +139,97 @@ class Store(unittest.TestCase):
         d = _tmp()
         with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
             for i in range(3):
-                st.load_record(_record(f"R-{i}", digest="aaaa1111"))
-            st.load_record(_record("R-0", digest="bbbb2222", q=40.0))
-            st.load_record(_record("R-p", digest="aaaa1111", provisional=True))
-            st.load_record(_record("R-nodate", digest="aaaa1111", date=None))
-            st.load_record(_record("R-1", digest="aaaa1111", q=71.0))          # loading again replaces
+                st.load_record(_record(f"R-{i}", digest="aaaa1111aa"))
+            st.load_record(_record("R-0", digest="bbbb2222bb", q=40.0))
+            st.load_record(_record("R-p", digest="aaaa1111aa", provisional=True))
+            st.load_record(_record("R-nodate", digest="aaaa1111aa", date=None))
+            st.load_record(_record("R-1", digest="aaaa1111aa", q=71.0))          # loading again replaces
             st.db.commit()
             self.assertEqual([v["n"] for v in st.versions()], [5, 1])
             rows = st.evaluations()                                          # the configuration with most
             self.assertEqual(len(rows), 3)
-            self.assertEqual({r["config_digest"] for r in rows}, {"aaaa1111"})
+            self.assertEqual({r["config_digest"] for r in rows}, {"aaaa1111aa"})
             self.assertEqual(sorted(r["quality_score"] for r in rows), [70.0, 70.0, 71.0])
             self.assertEqual(len(st.evaluations("bbbb")), 1)                  # a prefix is enough
             self.assertEqual(len(st.evaluations("aaaa1111", include_provisional=True)), 4)   # never without a date
+            self.assertEqual(st.db.execute("SELECT count(*) FROM evaluation WHERE report_date IS NULL").fetchone()[0], 1)
             self.assertEqual(len(st.evaluations(since="2025-01-02")), 0)
             with self.assertRaises(OperatorError):
                 st.evaluations("cccc")
             self.assertIsNone(st.row(_record("R-u", ambak=None))["agency_token"])
             with self.assertRaises(OperatorError):
                 st.row({"report_id": "x"})                                   # not an evaluation record
+
+    def test_free_text_of_a_report_never_enters_the_store(self):
+        d = _tmp()
+        rec = _record("R-1")
+        rec["report_profile"].update({"sector": "Secret Things of Acme Bank", "entity_type": "Acme Bank Ltd",
+                                      "audit_types": ["VAPT of Acme Bank", "vapt"], "engagement_type": "Acme audit",
+                                      "report_type": "Audit report of Acme Bank", "report_status": "Final (Acme Bank)",
+                                      "finding_list": [{"finding_id": "ACME-01", "severity": "High",
+                                                        "status": "Open, Acme Bank to fix by March"}]})
+        rec["modules"] = ["web", "Acme Bank portal"]
+        rec["suite_version"] = "Acme Bank"
+        rec["mandatory_checks"].append({"id": "Acme Bank", "result": "Fail"})
+        with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
+            st.load_record(rec)
+            st.db.commit()
+            dump = "\n".join(st.db.iterdump())
+            row = st.evaluations()[0]
+        self.assertNotIn("Acme", dump)
+        self.assertEqual((row["sector"], row["entity_type"], row["engagement_type"], row["report_type"],
+                          row["report_status"]), ("Other", "Other", "Other", "Other", "Other"))
+        self.assertEqual(row["audit_types"], ["Other", "VAPT"])
+        self.assertEqual(row["modules"], ["web"])
+
+    def test_reports_are_identified_with_their_organisation(self):
+        d = _tmp()
+        with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
+            st.load_record(_record("VAPT/2025/001", ambak="2099000001"))
+            st.load_record(_record("VAPT/2025/001", ambak="2099000002"))       # another agency's own numbering
+            _, replaced = st.load_record(_record("VAPT/2025/001", ambak="2099000001", q=75.0))   # a later version
+            st.db.commit()
+            rows = st.evaluations()
+        self.assertTrue(replaced)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(sorted(r["quality_score"] for r in rows), [70.0, 75.0])
+        with self.assertRaises(OperatorError):
+            report_identity({"report_id": "", "auditing_organisation": {"found": False}})
+
+    def test_loading_skips_what_is_not_a_record_and_dates_that_are_not_dates(self):
+        d = _tmp()
+        (d / "in").mkdir()
+        (d / "in" / "a.json").write_text(json.dumps(_record("R-1")))
+        (d / "in" / "b.json").write_text(json.dumps(dict(_record("R-2"), config_digest="not a digest!")))
+        (d / "in" / "c.json").write_text("{not json")
+        (d / "in" / "truth.json").write_text(json.dumps({"config_digest": "synthetic-0000000000000000"}))
+        bad_date = _record("R-3")
+        bad_date["report_profile"]["report_date"] = "05/03/2023"
+        (d / "in" / "d.json").write_text(json.dumps(bad_date))
+        (d / "in" / "e.json").write_text(json.dumps(_record("R-1", q=72.0)))     # the same report again
+        with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
+            result = st.load_paths([d / "in"])
+            self.assertEqual(len(st.evaluations()), 1)
+        self.assertEqual(result["loaded"], 3)
+        self.assertEqual(len(result["skipped"]), 3)
+        self.assertEqual(result["without_report_date"], 1)
+        self.assertEqual(len(result["same_report_in_this_load"]), 1)
+        self.assertTrue(any("truth.json: not an evaluation record" in x for x in result["skipped"]))
+
+    def test_a_store_that_is_not_one(self):
+        d = _tmp()
+        with self.assertRaises(OperatorError):
+            AnalyticsStore(d)                                                   # a folder
+        (d / "x.sqlite").write_text("not a database")
+        with self.assertRaises(OperatorError):
+            AnalyticsStore(d / "x.sqlite")
+        import sqlite3
+        other = sqlite3.connect(d / "other.sqlite")
+        other.execute("CREATE TABLE t (x)")
+        other.commit()
+        other.close()
+        with self.assertRaises(OperatorError):
+            AnalyticsStore(d / "other.sqlite")
 
     def test_rows_need_the_key(self):
         d = _tmp()
@@ -185,6 +257,11 @@ def _synthetic(**kw):
 
 def _agency(st, code: str) -> str:
     return st.pseudo.token("agency", f"ambak_code:{code}")
+
+
+def _report_tokens(st, records: list[dict], report_ids) -> set[str]:
+    wanted = set(report_ids)
+    return {st.pseudo.token("report", report_identity(r)) for r in records if r["report_id"] in wanted}
 
 
 @needs_numpy
@@ -260,9 +337,9 @@ class Anomalies(unittest.TestCase):
     def test_planted_outliers_found_with_few_false_flags(self):
         from certin_benchmark.analytics.outliers import report_outliers
         from certin_benchmark.analytics.peers import build_baseline
-        st, rows, truth, _ = _synthetic()
+        st, rows, truth, records = _synthetic()
         flags = report_outliers(rows, build_baseline(rows))
-        planted = {st.pseudo.token("report", r) for r in truth["outliers"]}
+        planted = _report_tokens(st, records, truth["outliers"])
         found = {f["report_token"] for f in flags}
         self.assertGreaterEqual(len(planted & found), 5)          # of 6
         self.assertLessEqual(len(found - planted), 0.02 * len(rows))
@@ -339,6 +416,35 @@ class Trends(unittest.TestCase):
         self.assertLess(first["shift_logit"], -0.7)
         self.assertLessEqual(len(set(changes) - {improving, declining, changing}), 1)
 
+    def test_terms_the_reports_cannot_estimate_are_left_out(self):
+        from certin_benchmark.analytics.trends import TrendModel, population_trend
+        _, rows, truth, _ = _synthetic()
+        after = [r for r in rows if r["report_date"] >= "2025-08-01"]
+        s = TrendModel(["2025-07-25"]).fit(after).summary()
+        self.assertNotIn("break 2025-07-25", s["terms"])                      # no report precedes the break
+        self.assertIn("break 2025-07-25", s["not_estimable"])
+        twice = population_trend(rows, ["2025-07-25", "2025-07-25"])["average_report"]
+        once = population_trend(rows, ["2025-07-25"])["average_report"]
+        self.assertEqual(twice["terms"]["break 2025-07-25"], once["terms"]["break 2025-07-25"])
+        same_size = [dict(r, assets=3) for r in rows]
+        s = TrendModel().fit(same_size).summary()
+        self.assertNotIn("log(1 + assets)", s["terms"])
+        self.assertIn("log(1 + assets)", s["not_estimable"])
+        with self.assertRaises(ValueError):
+            TrendModel().fit(rows[:10])
+
+    def test_cusum_alarms_follow_the_drop_and_are_rare_without_one(self):
+        from certin_benchmark.analytics.trends import agency_changes
+        st, rows, truth, _ = _synthetic()
+        changing = _agency(st, truth["change"]["agency"])
+        alarms = {c["agency_token"]: c["cusum_alarms"] for c in agency_changes(rows)}
+        down = [a for a in alarms.get(changing, []) if a["direction"] == "down"]
+        self.assertTrue(down)
+        self.assertGreaterEqual(down[0]["date"], truth["change"]["date"])
+        _, quiet, _, _ = _synthetic(planted_slope=0.0, change_delta=0.0)
+        with_alarms = [c for c in agency_changes(quiet) if c["cusum_alarms"]]
+        self.assertLessEqual(len(with_alarms), 3)
+
     def test_no_trend_flagged_where_none_was_planted(self):
         from certin_benchmark.analytics.trends import agency_trends
         _, rows, _, _ = _synthetic(planted_slope=0.0, change_delta=0.0)
@@ -400,6 +506,21 @@ class Prediction(unittest.TestCase):
         with self.assertRaises(ValueError):
             ExpectedScoreModel().fit(rows[:20])
 
+    def test_a_backtest_without_a_quarter_to_predict_says_so(self):
+        from certin_benchmark.analytics.predict import backtest
+        _, rows, _, _ = _synthetic()
+        late = [r for r in rows if r["report_date"] >= "2026-04-01"]
+        with self.assertRaises(ValueError):
+            backtest(late, min_train=len(late) - 11)
+
+    def test_small_samples_get_t_intervals(self):
+        from certin_benchmark.analytics.stats import mean_ci, t_quantile
+        self.assertAlmostEqual(t_quantile(0.975, 3), 3.182446, places=5)
+        self.assertAlmostEqual(t_quantile(0.975, 10), 2.228139, places=5)
+        self.assertAlmostEqual(t_quantile(0.025, 1), -12.706205, places=4)
+        m, lo, hi = mean_ci([1.0, 2.0, 3.0])
+        self.assertAlmostEqual(hi - m, 4.302653 / 3 ** 0.5, places=5)
+
     def test_cross_validation_chooses_the_penalty_the_data_support(self):
         import numpy as np
         from certin_benchmark.analytics.predict import choose_logistic, choose_ridge
@@ -429,6 +550,7 @@ class Impact(unittest.TestCase):
         self.assertEqual(r["composite_score_change"]["mean"], -10.0)
         self.assertEqual(r["quality_score_change"]["changed"], 0)
         self.assertIsNone(r["per_report"][0]["agency_token"])               # no organisation named without a key
+        self.assertEqual(r["per_report"][0]["report"], "SAMPLE-WASA-2026-014")
         self.assertIsNone(r["status_changes_by_agency"])
 
     @needs_numpy
@@ -440,13 +562,18 @@ class Impact(unittest.TestCase):
         self.assertEqual(r["quality_score_change"]["changed"], 1)
         self.assertEqual(r["criteria"], {})                                 # weights move Q, not the criteria
         key = Pseudonymiser(self.dir / "k.key", create=not (self.dir / "k.key").exists())
+
+        def tokens(rec):
+            org = agency_identity(rec["auditing_organisation"])
+            return key.token("report", report_identity(rec)), key.token("agency", org) if org else None
         r = impact([self.report], {"referral_mode_checks": ["MC-06", "MC-07"]}, refdata=helpers.refdata(),
-                   text_backend=scripted_backend(4), evaluated_on=helpers.EVAL_DATE,
-                   agency_token=lambda org: key.token("agency", agency_identity(org)) if agency_identity(org) else None)
+                   text_backend=scripted_backend(4), evaluated_on=helpers.EVAL_DATE, tokens=tokens)
         self.assertEqual(r["status_changed"], 1)
         self.assertEqual(list(r["status_transitions"]), ["Non-compliant -> Pending review"])
         token = r["per_report"][0]["agency_token"]
         self.assertRegex(token, r"^AG-")
+        self.assertRegex(r["per_report"][0]["report"], r"^RE-")            # never the identifier beside a token
+        self.assertNotIn("SAMPLE-WASA-2026-014", json.dumps(r))
         self.assertEqual(r["status_changes_by_agency"], {token: {"Non-compliant -> Pending review": 1}})
         self.assertIn("MC-06: Fail -> Indeterminate", r["checks_changed"])
 
@@ -469,6 +596,48 @@ class Impact(unittest.TestCase):
         rc, _, err = _run_cli("analytics", "impact", str(self.report), "--rdp", str(helpers.package()))
         self.assertEqual(rc, 1)
         self.assertIn("give the proposed change", err)
+        broken = self.dir / "broken.yaml"
+        broken.write_text("weights: [1, 2\n")
+        rc, _, err = _run_cli("analytics", "impact", str(self.report), "--proposed", str(broken))
+        self.assertEqual(rc, 1)
+        self.assertIn("not valid YAML", err)
+        rc, _, err = _run_cli("analytics", "impact", str(self.report), "--proposed", str(proposed),
+                              "--key", str(self.dir / "k.key"))
+        self.assertEqual(rc, 1)
+        self.assertIn("--store with --key", err)
+
+
+@needs_numpy
+class SmallStores(unittest.TestCase):
+    def test_identical_scores_and_a_handful_of_reports(self):
+        d = _tmp()
+        (d / "in").mkdir()
+        for i in range(4):
+            rec = _record(f"R-{i}", ambak=f"209900000{i % 2}", q=100.0, date=f"2025-0{i + 1}-15")
+            (d / "in" / f"{i}.json").write_text(json.dumps(rec))
+        store, key = str(d / "a.sqlite"), str(d / "k.key")
+        rc, _, err = _run_cli("analytics", "load", str(d / "in"), "--store", store, "--key", key)
+        self.assertEqual(rc, 0, err)
+        rc, out, err = _run_cli("analytics", "outliers", "--store", store, "--threshold", "60")
+        self.assertEqual(rc, 0, err)
+        r = json.loads(out)
+        self.assertEqual(r["reports"], [])
+        self.assertTrue(all(a["funnel"] == "within limits" for a in r["agencies"]["agencies"]))
+        rc, out, err = _run_cli("analytics", "trends", "--store", store)
+        self.assertEqual(rc, 0, err)
+        r = json.loads(out)
+        self.assertEqual([p["period"] for p in r["by_period"]], ["2025-Q1", "2025-Q2"])
+        self.assertIn("too few evaluations", r["population_trend"]["not_computed"])
+        self.assertIn("too few evaluations", r["agency_trends"]["not_computed"])
+
+    def test_the_key_warning_is_given_even_when_nothing_loads(self):
+        d = _tmp()
+        (d / "empty").mkdir()
+        rc, out, err = _run_cli("analytics", "load", str(d / "empty"), "--store", str(d / "a.sqlite"),
+                                "--key", str(d / "k.key"))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("created a new pseudonymisation key", err)
+        self.assertEqual(json.loads(out)["loaded"], 0)
 
 
 # ---- the command line -------------------------------------------------------------------------------------------------
@@ -493,6 +662,17 @@ class Commands(unittest.TestCase):
         rc, out, _ = _run_cli("analytics", "versions", "--store", self.store)
         self.assertEqual(rc, 0)
         self.assertTrue(json.loads(out)[0]["config_digest"].startswith("synthetic-"))
+
+    def test_a_baseline_of_another_configuration_is_refused(self):
+        from certin_benchmark.analytics.peers import Baseline
+        base = str(self.d / "baseline-other.json")
+        self.assertEqual(_run_cli("analytics", "baseline", "--store", self.store, "--out", base)[0], 0)
+        b = Baseline.load(base)
+        b.config_digest = "0123456789abcdef"
+        b.save(base)
+        rc, _, err = _run_cli("analytics", "outliers", "--store", self.store, "--baseline", base)
+        self.assertEqual(rc, 1)
+        self.assertIn("not comparable", err)
 
     def test_baseline_outliers_trends(self):
         base = str(self.d / "baseline.json")
@@ -524,12 +704,53 @@ class Commands(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         p = json.loads(out)["predictions"][0]
         self.assertTrue(p["report_token"].startswith("RE-"))
+        self.assertEqual(p["record"], 1)                                     # never the file's name beside a token
+        self.assertNotIn(record.name, out)
         self.assertNotIn("note", p)
+        self.assertLess(p["model"]["trained_to"], p["report_date"])
+
+    def test_a_prediction_never_sees_its_own_report_or_later_ones(self):
+        import shutil
+        d = _tmp()
+        shutil.copytree(self.d / "syn" / "records", d / "records")
+        records = sorted((d / "records").glob("*.json"))
+        target = records[300]
+        store, key = str(d / "a.sqlite"), str(d / "k.key")
+        self.assertEqual(_run_cli("analytics", "load", str(d / "records"), "--store", store, "--key", key)[0], 0)
+        rc, out, err = _run_cli("analytics", "predict", "--store", store, "--key", key, str(target))
+        self.assertEqual(rc, 0, err)
+        before = json.loads(out)["predictions"][0]
+        day = before["report_date"]
+        for f in records:                                  # change the report's own score and every later one's
+            rec = json.loads(f.read_text())
+            if rec["report_profile"]["report_date"] >= day:
+                rec["quality_score"] = 3.0
+                f.write_text(json.dumps(rec))
+        self.assertEqual(_run_cli("analytics", "load", str(d / "records"), "--store", store, "--key", key)[0], 0)
+        rc, out, err = _run_cli("analytics", "predict", "--store", store, "--key", key, str(target))
+        self.assertEqual(rc, 0, err)
+        after = json.loads(out)["predictions"][0]
+        self.assertEqual(after["expected_score"], before["expected_score"])
+        self.assertEqual(after["quality_score"], 3.0)
 
     def test_errors(self):
         rc, _, err = _run_cli("analytics", "versions", "--store", str(self.d / "missing.sqlite"))
         self.assertEqual(rc, 1)
         self.assertIn("not found", err)
+        rc, _, err = _run_cli("analytics", "versions", "--store", str(self.d))
+        self.assertEqual(rc, 1)
+        self.assertIn("is a folder", err)
+        notbase = self.d / "notbase.json"
+        notbase.write_text(json.dumps({"something": 1}))
+        rc, _, err = _run_cli("analytics", "outliers", "--store", self.store, "--baseline", str(notbase))
+        self.assertEqual(rc, 1)
+        self.assertIn("is not a baseline", err)
+        with AnalyticsStore(self.store) as st:
+            usable = len(st.evaluations())
+        rc, _, err = _run_cli("analytics", "predict", "--store", self.store, "--backtest", "--min-train",
+                              str(usable - 11))
+        self.assertEqual(rc, 1)
+        self.assertIn("no quarter has", err)
         rc, _, err = _run_cli("analytics", "baseline", "--store", self.store, "--since", "2031-01-01",
                               "--out", str(self.d / "b.json"))
         self.assertEqual(rc, 1)

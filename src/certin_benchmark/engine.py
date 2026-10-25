@@ -138,7 +138,8 @@ class BenchmarkEngine:
             organisation = {}
             ctx.warnings.append(f"auditing organisation could not be identified for the record ({type(exc).__name__}: {exc})")
         try:
-            profile = report_profile(report, (cfg.curated.engagements or {}).get("enumerated_audit_types"))
+            profile = report_profile(report, (cfg.curated.engagements or {}).get("enumerated_audit_types"),
+                                     ((cfg.curated.regulatory or {}).get("sectors") or {}).keys())
         except Exception as exc:  # the profile serves the analysis of many records; it never stops an evaluation
             profile = {}
             ctx.warnings.append(f"report profile could not be built ({type(exc).__name__}: {exc})")

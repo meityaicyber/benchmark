@@ -327,10 +327,14 @@ def cmd_calibrate(a: argparse.Namespace) -> int:
         print(json.dumps({"reports_used": len(rows), "weights": cal.fit_weights(rows, cfg.weights)}, indent=2))
     elif a.cal_cmd == "fit-pass-mark":
         from .errors import OperatorError
-        suite = cal.load_suite_records(sorted(Path(a.records).glob("*.json")))
-        table = cal.load_expert_table(a.experts)
+        try:
+            suite = cal.load_suite_records(sorted(Path(a.records).glob("*.json")))
+            table = cal.load_expert_table(a.experts)
+            split = json.loads(Path(a.split).read_text()) if a.split else None
+        except (ValueError, KeyError, AttributeError) as exc:     # JSON that does not parse, a CSV without the columns
+            raise OperatorError(f"cannot read the inputs: {type(exc).__name__}: {exc} (records are evaluation "
+                                "records; the expert table has the columns report_id, expert, item, value)") from None
         ref, pending = cal.adjudicate(table)
-        split = json.loads(Path(a.split).read_text()) if a.split else None
         if split is not None and not (isinstance(split, dict) and isinstance(split.get("calibration"), list)
                                       and isinstance(split.get("held_out"), list)):
             raise OperatorError(f"{a.split} is not a split written by calibrate split (lists calibration and "
