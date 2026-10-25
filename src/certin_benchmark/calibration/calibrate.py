@@ -6,7 +6,9 @@ panel:
   suite results:   one evaluation record (JSON) per report, as produced by `certin-benchmark evaluate`
   expert table:    CSV with columns report_id, expert, item, value
                    item is MC-xx (verdict Pass/Fail/Not applicable), Q1..Q8 (0 to 100),
-                   a sampled item id such as Q5.Cl (level 1 to 5), or overall (0 to 100)
+                   a sampled item id such as Q5.Cl (level 1 to 5), overall (0 to 100), or
+                   judgement (acceptable, borderline or not acceptable: the expert's overall
+                   judgement of the report, from which the pass mark is fitted)
   strata:          CSV with columns report_id, audit_type, organisation, length_band, sector, year
 """
 
@@ -64,16 +66,28 @@ def load_expert_table(path: str | Path) -> dict[str, dict[str, dict[str, str]]]:
     return out
 
 
+JUDGEMENT = "judgement"           # the expert's overall judgement of a report, for the pass mark
+JUDGEMENTS = {"acceptable": "acceptable", "borderline": "borderline", "not acceptable": "not acceptable",
+              "unacceptable": "not acceptable", "not-acceptable": "not acceptable"}
+
+
+def _categorical(item: str) -> bool:
+    return item.startswith("MC-") or item == JUDGEMENT
+
+
 def adjudicate(table: dict) -> tuple[dict[str, dict[str, str]], list[tuple[str, str]]]:
     """Return the adjudicated reference and the items that need a third expert.
 
     A third expert's value, recorded under expert 'adjudicator', is used wherever the first two differ
-    on a mandatory verdict or by more than 20 points on a criterion.
+    on a mandatory verdict or on their judgement of the report (acceptable, borderline, not acceptable),
+    or by more than 20 points on a criterion.
     """
     ref: dict[str, dict[str, str]] = defaultdict(dict)
     pending = []
     for rid, items in table.items():
         for item, by_expert in items.items():
+            if item == JUDGEMENT:
+                by_expert = {e: JUDGEMENTS.get(v.strip().lower(), v.strip().lower()) for e, v in by_expert.items()}
             vals = [v for e, v in sorted(by_expert.items()) if e != "adjudicator"]
             if "adjudicator" in by_expert:
                 ref[rid][item] = by_expert["adjudicator"]
@@ -82,7 +96,7 @@ def adjudicate(table: dict) -> tuple[dict[str, dict[str, str]], list[tuple[str, 
                 pending.append((rid, item))
                 continue
             a, b = vals[0], vals[1]
-            if item.startswith("MC-"):
+            if _categorical(item):
                 if a == b:
                     ref[rid][item] = a
                 else:
@@ -109,7 +123,9 @@ def inter_expert_agreement(table: dict) -> dict:
                 pairs.append((ex[0], ex[1]))
         if len(pairs) < 2:
             continue
-        if item.startswith("MC-"):
+        if _categorical(item):
+            if item == JUDGEMENT:
+                pairs = [(JUDGEMENTS.get(a.lower(), a.lower()), JUDGEMENTS.get(b.lower(), b.lower())) for a, b in pairs]
             out[item] = {"kappa": cohen_kappa([a for a, _ in pairs], [b for _, b in pairs]), "n": len(pairs)}
         elif item in CRITERIA or item == "overall":
             out[item] = {"icc": icc_a1([[float(a), float(b)] for a, b in pairs]), "n": len(pairs)}
@@ -265,6 +281,88 @@ def fit_weights(rows: list[tuple[list[float], float]], initial: dict[str, float]
             break
         w = new
     return {c: round(100 * wi, 3) for c, wi in zip(CRITERIA, w)}
+
+
+def fit_pass_mark(pairs: list[tuple[float, str]], bootstrap: int = 1000, seed: int = 20261026) -> dict:
+    """The pass mark for the quality score Q from the experts' judgements of the same reports.
+
+    pairs: (the Suite's Q, the adjudicated judgement: acceptable, borderline or not acceptable).
+    Two established standard-setting methods:
+    * contrasting groups: the cut that misclassifies fewest reports judged acceptable or not acceptable (reports
+      at or above the cut pass); where several cuts do equally well, the middle of their range. Its 95% interval
+      comes from resampling the reports (bootstrap);
+    * borderline group: the median Q of the reports judged borderline, a cross-check (three or more needed).
+    """
+    norm = [(float(q), JUDGEMENTS.get(str(j).strip().lower())) for q, j in pairs if q is not None]
+    norm = [(q, j) for q, j in norm if j]
+    acc = [q for q, j in norm if j == "acceptable"]
+    nacc = [q for q, j in norm if j == "not acceptable"]
+    border = [q for q, j in norm if j == "borderline"]
+    if not acc or not nacc:
+        raise ValueError("the pass mark needs reports judged acceptable and reports judged not acceptable")
+
+    def errors_at(c: float, a: list[float], n: list[float]) -> int:
+        return sum(1 for q in n if q >= c) + sum(1 for q in a if q < c)
+
+    def cut(a: list[float], n: list[float]) -> float:
+        values = sorted(set(a) | set(n))
+        candidates = [values[0] - 0.5] + [(x + y) / 2 for x, y in zip(values, values[1:])] + [values[-1] + 0.5]
+        errors = [errors_at(c, a, n) for c in candidates]
+        best = min(errors)
+        # the cuts that do best may form several runs; the middle of the longest run (the first, if equally long)
+        runs: list[list[float]] = []
+        for i, (c, e) in enumerate(zip(candidates, errors)):
+            if e == best:
+                if runs and errors[i - 1] == best:
+                    runs[-1].append(c)
+                else:
+                    runs.append([c])
+        run = max(runs, key=len)
+        return (run[0] + run[-1]) / 2
+
+    mark = round(cut(acc, nacc), 2)
+    errors = errors_at(mark, acc, nacc)          # at the mark as reported
+    rng = random.Random(seed)
+    boots = []
+    for _ in range(bootstrap):
+        sample_ = [norm[rng.randrange(len(norm))] for _ in norm]
+        a = [q for q, j in sample_ if j == "acceptable"]
+        n = [q for q, j in sample_ if j == "not acceptable"]
+        if a and n:
+            boots.append(cut(a, n))
+    boots.sort()
+    interval = [boots[int(0.025 * (len(boots) - 1))], boots[int(0.975 * (len(boots) - 1))]] if boots else None
+    return {
+        "contrasting_groups": mark,
+        "interval_95": [round(v, 2) for v in interval] if interval else None,
+        "misclassified": errors,
+        "reports_acceptable": len(acc), "reports_not_acceptable": len(nacc),
+        "borderline_group": round(statistics.median(border), 2) if len(border) >= 3 else None,
+        "reports_borderline": len(border),
+    }
+
+
+def pass_mark_pairs(suite: dict[str, dict], reference: dict[str, dict[str, str]],
+                    ids: Iterable[str] | None = None) -> list[tuple[float, str]]:
+    """(the Suite's Q, the adjudicated judgement) for the reports in both, optionally only those in `ids`."""
+    keep = set(ids) if ids is not None else None
+    out = []
+    for rid in sorted(set(suite) & set(reference)):
+        if keep is not None and rid not in keep:
+            continue
+        q, j = suite[rid].get("quality_score"), reference[rid].get(JUDGEMENT)
+        if q is not None and j:
+            out.append((float(q), j))
+    return out
+
+
+def pass_mark_agreement(pairs: list[tuple[float, str]], mark: float) -> dict:
+    """How the pass mark agrees with the experts' judgements (borderline reports left out)."""
+    clear = [(q, JUDGEMENTS.get(j)) for q, j in pairs if JUDGEMENTS.get(j) in ("acceptable", "not acceptable")]
+    if not clear:
+        return {"reports": 0}
+    right = sum(1 for q, j in clear if (q >= mark) == (j == "acceptable"))
+    return {"reports": len(clear), "agree": right, "agreement": round(right / len(clear), 4)}
 
 
 def fit_non_compliance_cap(noncompliant_overall_scores: list[float]) -> float:

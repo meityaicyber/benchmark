@@ -325,6 +325,32 @@ def cmd_calibrate(a: argparse.Namespace) -> int:
                 rows.append(([scores[c] for c in cal.CRITERIA], float(ref[rid]["overall"])))
         cfg = load_config(a.config)
         print(json.dumps({"reports_used": len(rows), "weights": cal.fit_weights(rows, cfg.weights)}, indent=2))
+    elif a.cal_cmd == "fit-pass-mark":
+        from .errors import OperatorError
+        suite = cal.load_suite_records(sorted(Path(a.records).glob("*.json")))
+        table = cal.load_expert_table(a.experts)
+        ref, pending = cal.adjudicate(table)
+        split = json.loads(Path(a.split).read_text()) if a.split else None
+        if split is not None and not (isinstance(split, dict) and isinstance(split.get("calibration"), list)
+                                      and isinstance(split.get("held_out"), list)):
+            raise OperatorError(f"{a.split} is not a split written by calibrate split (lists calibration and "
+                                "held_out)")
+        fit_ids = split["calibration"] if split else None
+        pairs = cal.pass_mark_pairs(suite, ref, fit_ids)
+        try:
+            fit = cal.fit_pass_mark(pairs)
+        except ValueError as exc:
+            raise OperatorError(f"{exc} ({len(pairs)} reports carry both a quality score and an adjudicated "
+                                "judgement)") from None
+        out = {"fitted_on": "calibration portion" if split else "all reports with a judgement",
+               "reports": len(pairs), "pass_mark": fit, "judgement_agreement": cal.inter_expert_agreement(table).get(
+                   cal.JUDGEMENT),
+               "pending_adjudication": [p for p in pending if p[1] == cal.JUDGEMENT]}
+        out["agreement_fitted"] = cal.pass_mark_agreement(pairs, fit["contrasting_groups"])
+        if split:
+            held = cal.pass_mark_pairs(suite, ref, split["held_out"])
+            out["agreement_held_out"] = cal.pass_mark_agreement(held, fit["contrasting_groups"])
+        print(json.dumps(out, indent=2))
     return 0
 
 
@@ -457,6 +483,12 @@ def build_parser() -> argparse.ArgumentParser:
     fw.add_argument("--records", required=True)
     fw.add_argument("--experts", required=True)
     fw.add_argument("--config")
+    pm = cs.add_parser("fit-pass-mark", help="the pass mark for the quality score from the experts' judgements "
+                                             "(item 'judgement': acceptable, borderline, not acceptable)")
+    pm.add_argument("--records", required=True)
+    pm.add_argument("--experts", required=True)
+    pm.add_argument("--split", help="the split written by calibrate split: the mark is fitted on the calibration "
+                                    "portion and its agreement measured on the held-out portion")
     cal.set_defaults(fn=cmd_calibrate)
     return p
 

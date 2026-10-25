@@ -18,10 +18,10 @@ For each report the Suite returns a compliance status (Compliant, Non-compliant 
 | `src/certin_benchmark/refdata/` | Reference Data Package: acquisition, build, signing, import, as-at-date lookups (Section 11) |
 | `src/certin_benchmark/refdata/empanelment_pdf.py` | Conversion of CERT-In's list of empanelled auditing organisations (PDF) into an empanelment set |
 | `src/certin_benchmark/refdata/empanelment_register.py` | Conversion of CERT-In's register of the organisations' AMBAK codes, CERT-In references and validity of empanelment (spreadsheet) |
-| `src/certin_benchmark/calibration/` | Agreement measures, reference set split, weight and threshold fitting (Section 8) |
+| `src/certin_benchmark/calibration/` | Agreement measures, reference set split, weight, threshold and pass mark fitting (Section 8) |
 | `config/suite.yaml` | Weights, cap, thresholds, tolerances, sampling and model settings |
 | `curated/` | Curated reference lists transferred inside each Reference Data Package (Section 11.1) |
-| `tests/` | 207 tests, including an end-to-end run on a sample report, a synthetic signed package, and a synthetic list and register in the layout of CERT-In's |
+| `tests/` | 211 tests, including an end-to-end run on a sample report, a synthetic signed package, and a synthetic list and register in the layout of CERT-In's |
 | `docs/VALIDATION.md` | Check of every external fact against the publishers' sites (12, 13 and 16 October 2026) and of the CERT-In documents supplied in October 2026 |
 | `docs/REPORT_FORMATS.md` | CERT-In's two audit report formats mapped to the master schema and the Suite's checks, with the fields the schema lacks |
 | `tools/` | Scripts that re-validate the CVSS reference vectors against the specification and FIRST's calculator |
@@ -158,6 +158,14 @@ certin-benchmark calibrate fit-weights --records suite_records/ --experts expert
 ```
 
 The agreement report gives Cohen's kappa and precision of Fail per mandatory check, ICC(A,1) per criterion against the inter-expert bound, quadratic weighted kappa per language-model sub-dimension, Spearman correlation for the composite and test-retest ICC, each against its acceptance target. `all_targets_met` is true only when every measure is present and met. A check that misses its targets is placed in `referral_mode_checks` in `config/suite.yaml`.
+
+### The pass mark
+
+```
+certin-benchmark calibrate fit-pass-mark --records suite_records/ --experts experts.csv --split split.json
+```
+
+The pass mark for Q is set from the expert panel's judgement of the same reports. Besides the item scores, each expert records an overall judgement of each report in the expert table, as the item `judgement` with the value acceptable, borderline or not acceptable ("unacceptable" is read as not acceptable). Two judgements that differ are adjudicated by a third expert, as a mandatory verdict is. The mark is fitted by the contrasting-groups method: the cut on Q that misclassifies fewest of the reports judged acceptable or not acceptable (reports at or above the cut pass; where several cuts do equally well, the middle of the longest run of them), with a 95% interval from resampling the reports. The median Q of the reports judged borderline is given beside it as a cross-check (three or more such reports needed). With `--split` (the output of `calibrate split`), the mark is fitted on the calibration portion and its agreement with the experts is measured on the held-out portion. Like the weights, the mark is proposed to CERT-In for approval and then recorded in the configuration.
 
 ## Status of the curated lists
 
