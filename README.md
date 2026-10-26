@@ -23,7 +23,7 @@ For each report the Suite returns a compliance status (Compliant, Non-compliant 
 | `src/certin_benchmark/analytics/` | Analyses over many evaluation records (proposal Objective 3, components B to F): pseudonymised store, peer baselines, anomalies, trends, prediction, impact of a proposed change, synthetic records |
 | `config/suite.yaml` | Weights, cap, thresholds, tolerances, sampling and model settings |
 | `curated/` | Curated reference lists transferred inside each Reference Data Package (Section 11.1) |
-| `tests/` | 267 tests, including an end-to-end run on a sample report, a synthetic signed package, a synthetic list and register in the layout of CERT-In's, and the analyses run on synthetic records with known patterns |
+| `tests/` | 268 tests, including an end-to-end run on a sample report, a synthetic signed package, a synthetic list and register in the layout of CERT-In's, and the analyses run on synthetic records with known patterns |
 | `docs/VALIDATION.md` | Check of every external fact against the publishers' sites (12, 13 and 16 October 2026) and of the CERT-In documents supplied in October 2026 |
 | `docs/REPORT_FORMATS.md` | CERT-In's two audit report formats mapped to the master schema and the Suite's checks, with the fields the schema lacks |
 | `tools/` | Scripts that re-validate the CVSS reference vectors against the specification and FIRST's calculator |

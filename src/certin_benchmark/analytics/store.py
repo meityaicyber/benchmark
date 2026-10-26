@@ -344,10 +344,13 @@ class AnalyticsStore:
                 report = free[0]
             else:
                 # every key is held by a different report (a file holding reports of other organisations, and no
-                # report identifier): a key of its own, from its keys and its organisation, registered below
-                fallback = tokens.token("report", "\x00".join([a for a, _ in keys] + [agency or "unidentified"]))
-                keys.append((fallback, False))
-                report = self._alias("report_alias", "report_token", fallback) or fallback
+                # report identifier): keys of its own, from its keys and each identifier of its organisation as the
+                # record gives it (which a later merge of organisations does not change), registered below
+                base = "\x00".join(a for a, _ in keys)
+                fallbacks = [tokens.token("report", f"{base}\x00{x}") for x in (agency_aliases or ["unidentified"])]
+                keys += [(f, False) for f in fallbacks]
+                report = next((r for r in (self._alias("report_alias", "report_token", f) for f in fallbacks) if r),
+                              fallbacks[0])
         if write:
             for other in known_agencies[1:]:
                 self.db.execute("UPDATE evaluation SET agency_token = ? WHERE agency_token = ?", (agency, other))

@@ -364,6 +364,26 @@ class Store(unittest.TestCase):
             self.assertEqual(outcome, "replaced")
             self.assertEqual(sorted(r["quality_score"] for r in st.evaluations()), [50.0, 71.0, 72.0, 81.0])
 
+    def test_a_report_found_by_its_own_key_after_its_organisation_is_tied_to_another_identifier(self):
+        f = "sha256:" + "bb" * 32
+        zeta = self._version("Z1", "2099000011", f, "2025-05-01", 40.0)
+        alpha_new = self._version("A1", "2099000012", "sha256:" + "cc" * 32, "2025-05-01", 41.0,
+                                  org_id="certin-emp:alpha-new")
+        old_report = _record("", ambak=None, q=42.0, date="2025-05-01")       # no number, under the old name
+        old_report["auditing_organisation"] = {"found": True, "org_id": "certin-emp:alpha-old"}
+        old_report["source"] = {"file_hash": f}                              # a file holding Zeta's report too
+        tie = self._version("A2", "2099000012", "sha256:" + "dd" * 32, "2025-05-01", 43.0,
+                            org_id="certin-emp:alpha-old")                   # ties the old name to the AMBAK code
+        d = _tmp()
+        with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
+            for rec in (zeta, alpha_new, old_report, tie):
+                st.load_record(rec)
+            _, outcome = st.load_record(dict(old_report, quality_score=44.0))
+            rows = st.evaluations()
+        self.assertEqual(outcome, "replaced")
+        self.assertEqual(sorted(r["quality_score"] for r in rows), [40.0, 41.0, 43.0, 44.0])
+        self.assertEqual(len({r["agency_token"] for r in rows}), 2)            # Zeta and Alpha
+
     def test_the_later_version_is_kept_whatever_the_order(self):
         march = self._version("R/9", "2099000007", "sha256:" + "66" * 32, "2025-03-01", 60.0)
         june = self._version("R/9", "2099000007", "sha256:" + "77" * 32, "2025-06-01", 85.0)
