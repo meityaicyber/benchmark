@@ -22,11 +22,26 @@ def _emit(obj, out: str | None) -> None:
 _OPEN: list = []
 
 
-def _store(a, key: bool = False, create: bool = False):
+def _curated_dir(a) -> str | None:
+    """The curated lists the records were evaluated with: --curated, else those of the package given."""
+    if getattr(a, "curated", None):
+        return a.curated
+    from ..refdata.package import latest_package
+    rdp = Path(a.rdp) if getattr(a, "rdp", None) else (latest_package(a.rdp_store) if getattr(a, "rdp_store", None)
+                                                        else None)
+    if getattr(a, "rdp_store", None) and rdp is None:
+        raise OperatorError(f"no Reference Data Package in {a.rdp_store}")
+    if rdp is not None and not (Path(rdp) / "manifest.json").is_file():
+        raise OperatorError(f"{rdp} is not a Reference Data Package: it has no manifest.json")
+    return str(Path(rdp) / "curated") if rdp is not None and (Path(rdp) / "curated").is_dir() else None
+
+
+def _store(a, key: bool = False, create: bool = False, lists: bool = False):
     from .store import AnalyticsStore
     if key and not a.key:
         raise OperatorError("this command needs the pseudonymisation key (--key)")
-    store = AnalyticsStore(a.store, a.key if key else None, create_key=create)
+    store = AnalyticsStore(a.store, a.key if key else None, create_key=create,
+                           curated_dir=_curated_dir(a) if lists else None)
     _OPEN.append(store)
     if store.pseudo is not None and store.pseudo.created:
         print(f"warning: created a new pseudonymisation key at {a.key}; keep it with the store and never replace "
@@ -73,7 +88,7 @@ def _run(a) -> int:
         _emit(write(a.out, spec), None)
         return 0
     if cmd == "load":
-        store = _store(a, key=True, create=True)
+        store = _store(a, key=True, create=True, lists=True)
         result = store.load_paths(a.records)
         result["configurations"] = store.versions()
         _emit(result, None)
@@ -136,7 +151,7 @@ def _predict(a) -> int:
     from .predict import ExpectedScoreModel, backtest
     if not a.backtest and not a.records:
         raise OperatorError("give evaluation records to predict for, or --backtest")
-    store = _store(a, key=bool(a.records))
+    store = _store(a, key=bool(a.records), lists=bool(a.records))
     rows = _rows(store, a)
     digest = rows[0]["config_digest"]
     out: dict = {"configuration": digest, "evaluations": len(rows)}
@@ -213,12 +228,7 @@ def _impact(a) -> int:
         if not (a.key and a.store):
             raise OperatorError("give --store with --key: the key is checked against the store's, so that the "
                                 "tokens are those of the store")
-        from .store import agency_identity, report_identity
-        pseudo = _store(a, key=True).pseudo
-
-        def tokens(rec: dict) -> tuple[str, str | None]:
-            org = agency_identity(rec.get("auditing_organisation") or {})
-            return pseudo.token("report", report_identity(rec)), pseudo.token("agency", org) if org else None
+        tokens = _store(a, key=True).identify          # the store's own tokens for the report and its organisation
     refdata = ReferenceData(rd_path) if rd_path else None
     try:
         curated = a.curated or (refdata.curated_dir if refdata is not None and refdata.curated_dir.exists() else None)
@@ -266,11 +276,18 @@ def register(sub) -> None:
     p.add_argument("--agencies", type=int, default=120)
     p.add_argument("--seed", type=int, default=7)
 
+    def lists_args(p):
+        p.add_argument("--curated", help="the curated lists the records were evaluated with (default: those of the "
+                                         "package given, and the Suite's own)")
+        p.add_argument("--rdp", help="the Reference Data Package the records were evaluated with (its curated lists)")
+        p.add_argument("--rdp-store", help="store of imported packages; the latest package's curated lists are used")
+
     p = s.add_parser("load", help="load evaluation records (files or folders) into the store; creates the store and "
                                   "the pseudonymisation key on first use")
     p.add_argument("records", nargs="+")
     p.add_argument("--store", required=True)
     p.add_argument("--key", required=True)
+    lists_args(p)
 
     p = s.add_parser("versions", help="the configurations in the store, with their number of evaluations")
     p.add_argument("--store", required=True)
@@ -312,6 +329,7 @@ def register(sub) -> None:
     p.add_argument("--min-train", type=int, default=200)
     p.add_argument("--pre-audit", action="store_true", help="use only what is known before the audit (engagement "
                                                             "type, sector, agency record)")
+    lists_args(p)
     p.add_argument("--since", type=_iso_date, help="first report date (YYYY-MM-DD)")
     p.add_argument("--until", type=_iso_date, help="last report date (YYYY-MM-DD)")
     p.add_argument("--out")

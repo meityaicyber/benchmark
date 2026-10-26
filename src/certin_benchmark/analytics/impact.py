@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -47,8 +48,17 @@ def compare(now: dict, new: dict, tokens=None) -> dict:
     out["criteria_changed"] = {c: [cn.get(c), cw.get(c)] for c in sorted(set(cn) | set(cw)) if cn.get(c) != cw.get(c)}
     kn, kw = _checks(now), _checks(new)
     out["checks_changed"] = {c: [kn.get(c), kw.get(c)] for c in sorted(set(kn) | set(kw)) if kn.get(c) != kw.get(c)}
-    out["needs_model"] = sorted(set(new.get("incomplete") or []) - set(now.get("incomplete") or []))
+    # model-judged items not evaluated under the proposed configuration that were under the current one, counted
+    # by sub-dimension: an item's id can carry a finding's identifier or a person's name from the report
+    items = set(new.get("incomplete") or []) - set(now.get("incomplete") or [])
+    out["needs_model"] = dict(sorted(Counter(_sub_dimension(i) for i in items).items()))
     return out
+
+
+def _sub_dimension(item_id: str) -> str:
+    """"Q4.d.WASA-01.specificity" -> "Q4.d"; "Q5.Cl (language model not available)" -> "Q5.Cl"."""
+    m = re.match(r"(Q[1-8])(?:\.([A-Za-z]{1,4}))?", str(item_id))
+    return f"{m.group(1)}.{m.group(2)}" if m and m.group(2) else (m.group(1) if m else "other")
 
 
 def impact(reports: list[str | Path], proposed: dict | None, config: str | Path | None = None,

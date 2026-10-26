@@ -21,7 +21,7 @@ from typing import Iterable
 
 import numpy as np
 
-from .stats import NORMAL, Z95, binary_segmentation, cusum, mean_ci, ols, to_logit, wilson
+from .stats import NORMAL, Z95, binary_segmentation, mean_ci, ols, self_starting_cusum, to_logit, wilson
 
 GUIDELINES_DATE = "2025-07-25"
 
@@ -268,17 +268,17 @@ def agency_trends(rows: list[dict], model: TrendModel | None = None, min_reports
 
 
 def agency_changes(rows: list[dict], model: TrendModel | None = None, min_reports: int = 12,
-                   min_segment: int = 5, burn_in: int = 8, h: float = 5.0) -> list[dict]:
+                   min_segment: int = 5, burn_in: int = 5, h: float = 5.0) -> list[dict]:
     """Changes in an agency's level relative to the population, for each agency with at least min_reports reports:
 
     * the dates where binary segmentation of its residuals, in date order, finds a change, with the level before
       and after (score points at the agency's average);
-    * the dates a two-sided CUSUM (allowance 0.5 and threshold h, in residual standard deviations) raises an
-      alarm. Its target is the mean of the agency's first burn_in reports and, after each alarm, the mean of the
-      burn_in reports that follow it, as a monitor is reset to the new level once a change has been acted on. The
-      CUSUM is run for every such agency, not only where segmentation finds a change. The residuals come from a
-      model fitted to all the reports, so this shows where a monitoring rule would have signalled, not what live
-      monitoring would have known at the time.
+    * the dates a self-starting CUSUM (allowance 0.5 and threshold h, in residual standard deviations) raises an
+      alarm: each report is compared with the mean of the agency's reports before it since the last alarm, so that
+      no level is taken from hindsight, and monitoring starts afresh after each alarm. It is run for every such
+      agency, not only where segmentation finds a change. The residuals come from a model fitted to all the
+      reports, so this shows where a monitoring rule would have signalled, not exactly what live monitoring would
+      have known at the time.
 
     Agencies with neither a change nor an alarm are left out."""
     model = model or TrendModel(within_agency=True).fit(rows)
@@ -304,16 +304,8 @@ def agency_changes(rows: list[dict], model: TrendModel | None = None, min_report
             changes.append({"from_date": pts[cp][0], "reports_before": before.size, "reports_after": after.size,
                             "shift_logit": round(float(after.mean() - before.mean()), 4),
                             "shift_score_points": round(float(after.mean() - before.mean()) * per_point, 2)})
-        alarms = []
-        start = 0
-        while sigma > 0 and start + burn_in < len(pts):
-            target = float(e[start:start + burn_in].mean())
-            found = cusum(e[start + burn_in:], target, sigma, h=h)
-            if not found:
-                break
-            at = start + burn_in + found[0]["index"]
-            alarms.append({"date": pts[at][0], "direction": found[0]["direction"]})
-            start = at + 1                                     # reset: the next burn_in reports give the new level
+        alarms = [{"date": pts[a["index"]][0], "direction": a["direction"]}
+                  for a in self_starting_cusum(e, sigma, burn_in=burn_in, h=h)]
         if changes or alarms:
             out.append({"agency_token": token, "reports": len(pts), "changes": changes, "cusum_alarms": alarms})
     return out

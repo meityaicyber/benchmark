@@ -20,7 +20,8 @@ from pathlib import Path
 import helpers  # noqa: F401  (path setup)
 from staging import scripted_backend
 
-from certin_benchmark.analytics.store import AnalyticsStore, Pseudonymiser, agency_identity, report_identity
+from certin_benchmark.analytics.store import (AnalyticsStore, Pseudonymiser, agency_identities, agency_identity,
+                                              report_keys)
 from certin_benchmark.cli import main
 from certin_benchmark.config import load_config
 from certin_benchmark.errors import OperatorError
@@ -54,7 +55,7 @@ def _record(report_id: str, digest: str = "cfa0000000", ambak: str | None = "209
                       "per_finding": {"F-1": {"S_a": 1.0, "S_c": 60.0, "cap": 100.0, "E": 55.0}}}],
         "referrals": [], "incomplete": [], "modules": ["web"],
         "reference_data": {"package_id": "RDP-2099-01-01"},
-        "auditing_organisation": ({"found": True, "ambak_code": ambak, "certin_reference": "RE-2099-1",
+        "auditing_organisation": ({"found": True, "ambak_code": ambak, "certin_reference": f"RE-{ambak}",
                                    "name_in_records": "M/s Invented Assurance Agency"} if ambak else {"found": False}),
         "report_profile": {"report_date": date, "date_basis": "release" if date else None,
                            "audit_types": ["VAPT"], "engagement_type": "VAPT", "sector": "Government",
@@ -117,6 +118,9 @@ class Store(unittest.TestCase):
         self.assertEqual(agency_identity({"found": True, "ambak_code": " ", "certin_reference": "RE-1"}),
                          "certin_reference:RE-1")
         self.assertEqual(agency_identity({"found": True, "org_id": "certin-emp:x"}), "org_id:certin-emp:x")
+        self.assertEqual(agency_identities({"found": True, "ambak_code": "2099000001", "certin_reference": "RE-1",
+                                            "org_id": "certin-emp:x"}),
+                         ["ambak_code:2099000001", "org_id:certin-emp:x"])     # a shared reference never joins two
         self.assertIsNone(agency_identity({"found": False, "ambak_code": "2099000001"}))
         self.assertIsNone(agency_identity({}))
 
@@ -129,7 +133,7 @@ class Store(unittest.TestCase):
             row = st.evaluations()[0]
             self.assertEqual(st.db.execute("SELECT count(*) FROM finding").fetchone()[0], 1)
             self.assertEqual(st.db.execute("SELECT count(*) FROM component").fetchone()[0], 1)
-        for text in ("SAMPLE-ID-77", "2099123456", "RE-2099-1", "Invented Assurance", "F-1"):
+        for text in ("SAMPLE-ID-77", "2099123456", "RE-2099", "Invented Assurance", "F-1"):
             self.assertNotIn(text, dump)
         self.assertTrue(row["report_token"].startswith("RE-") and row["agency_token"].startswith("AG-"))
         self.assertEqual(row["checks"], {"MC-01": "Pass", "MC-21": "Not applicable"})
@@ -194,7 +198,32 @@ class Store(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual(sorted(r["quality_score"] for r in rows), [70.0, 75.0])
         with self.assertRaises(OperatorError):
-            report_identity({"report_id": "", "auditing_organisation": {"found": False}})
+            report_keys({"report_id": "", "auditing_organisation": {"found": False}})
+
+    def test_a_report_keeps_its_token_however_its_organisation_is_identified(self):
+        d = _tmp()
+        first = _record("VAPT/2025/007", ambak=None)
+        first["auditing_organisation"] = {"found": True, "org_id": "certin-emp:invented-assurance"}
+        first["source"] = {"file_hash": "sha256:" + "ab" * 32}
+        again = _record("VAPT/2025/007", ambak="2099000009", q=74.0)          # a newer package: the register too
+        again["auditing_organisation"]["org_id"] = "certin-emp:invented-assurance"
+        again["source"] = dict(first["source"])
+        lost = _record("VAPT/2025/007", ambak=None, q=76.0)                  # organisation not found at all
+        lost["source"] = dict(first["source"])
+        other = _record("VAPT/2025/008", ambak=None)                         # a second report of the organisation
+        other["auditing_organisation"] = {"found": True, "org_id": "certin-emp:invented-assurance"}
+        other["source"] = {"file_hash": "sha256:" + "cd" * 32}
+        with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
+            st.load_record(first)
+            st.load_record(other)
+            _, replaced_again = st.load_record(again)
+            _, replaced_lost = st.load_record(lost)
+            st.db.commit()
+            rows = st.evaluations()
+        self.assertTrue(replaced_again and replaced_lost)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(sorted(r["quality_score"] for r in rows), [70.0, 76.0])
+        self.assertEqual(len({r["agency_token"] for r in rows if r["agency_token"]}), 1)   # one organisation
 
     def test_loading_skips_what_is_not_a_record_and_dates_that_are_not_dates(self):
         d = _tmp()
@@ -231,6 +260,43 @@ class Store(unittest.TestCase):
         with self.assertRaises(OperatorError):
             AnalyticsStore(d / "other.sqlite")
 
+    def test_values_of_the_lists_the_records_were_evaluated_with_are_kept(self):
+        import shutil
+        d = _tmp()
+        shutil.copytree(helpers.ROOT / "curated", d / "curated")
+        with open(d / "curated" / "regulatory.yaml", "a") as fh:
+            fh.write("  Space: []\n")
+        rec = _record("R-1")
+        rec["report_profile"]["sector"] = "Space"
+        (d / "in").mkdir()
+        (d / "in" / "r.json").write_text(json.dumps(rec))
+        rc, out, err = _run_cli("analytics", "load", str(d / "in"), "--store", str(d / "a.sqlite"),
+                                "--key", str(d / "k.key"))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(out)["values_recorded_as_other"], {"sector": 1})
+        rc, out, err = _run_cli("analytics", "load", str(d / "in"), "--store", str(d / "a.sqlite"),
+                                "--key", str(d / "k.key"), "--curated", str(d / "curated"))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(out)["values_recorded_as_other"], {})
+        with AnalyticsStore(d / "a.sqlite") as st:
+            self.assertEqual(st.evaluations()[0]["sector"], "Space")
+
+    def test_a_record_of_the_suite_is_kept_whole(self):
+        d = _tmp()
+        rec = helpers.evaluate(helpers.sample()).to_dict()
+        rec["provisional"] = False
+        with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
+            st.load_record(rec)
+            st.db.commit()
+            names = {r[0] for r in st.db.execute("SELECT component FROM component")}
+            stored = st.db.execute("SELECT count(*) FROM component").fetchone()[0]
+            row = st.evaluations()[0]
+        given = sum(len(c.get("components") or {}) for c in rec["criteria"])
+        self.assertEqual(stored, given)
+        self.assertIn("Q4.a structural completeness", names)
+        self.assertEqual((row["engagement_type"], row["sector"], row["entity_type"]),
+                         ("Web Application Security Audit", "Government", "Central Ministry/Department"))
+
     def test_rows_need_the_key(self):
         d = _tmp()
         with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
@@ -251,7 +317,8 @@ def _synthetic(**kw):
         st.load_record(r)
     st.db.commit()
     rows = st.evaluations()
-    st.close()                     # the tests use only its key (st.pseudo) from here
+    st.report_tokens = {r["report_id"]: st.identify(r)[0] for r in records}
+    st.close()                     # the tests use only its key (st.pseudo) and these tokens from here
     return st, rows, truth, records
 
 
@@ -260,8 +327,7 @@ def _agency(st, code: str) -> str:
 
 
 def _report_tokens(st, records: list[dict], report_ids) -> set[str]:
-    wanted = set(report_ids)
-    return {st.pseudo.token("report", report_identity(r)) for r in records if r["report_id"] in wanted}
+    return {st.report_tokens[r] for r in report_ids}
 
 
 @needs_numpy
@@ -561,13 +627,9 @@ class Impact(unittest.TestCase):
                    evaluated_on=helpers.EVAL_DATE)
         self.assertEqual(r["quality_score_change"]["changed"], 1)
         self.assertEqual(r["criteria"], {})                                 # weights move Q, not the criteria
-        key = Pseudonymiser(self.dir / "k.key", create=not (self.dir / "k.key").exists())
-
-        def tokens(rec):
-            org = agency_identity(rec["auditing_organisation"])
-            return key.token("report", report_identity(rec)), key.token("agency", org) if org else None
-        r = impact([self.report], {"referral_mode_checks": ["MC-06", "MC-07"]}, refdata=helpers.refdata(),
-                   text_backend=scripted_backend(4), evaluated_on=helpers.EVAL_DATE, tokens=tokens)
+        with AnalyticsStore(self.dir / "impact.sqlite", self.dir / "impact.key", create_key=True) as st:
+            r = impact([self.report], {"referral_mode_checks": ["MC-06", "MC-07"]}, refdata=helpers.refdata(),
+                       text_backend=scripted_backend(4), evaluated_on=helpers.EVAL_DATE, tokens=st.identify)
         self.assertEqual(r["status_changed"], 1)
         self.assertEqual(list(r["status_transitions"]), ["Non-compliant -> Pending review"])
         token = r["per_report"][0]["agency_token"]
@@ -576,6 +638,17 @@ class Impact(unittest.TestCase):
         self.assertNotIn("SAMPLE-WASA-2026-014", json.dumps(r))
         self.assertEqual(r["status_changes_by_agency"], {token: {"Non-compliant -> Pending review": 1}})
         self.assertIn("MC-06: Fail -> Indeterminate", r["checks_changed"])
+
+    @needs_numpy
+    def test_items_needing_the_model_are_counted_by_sub_dimension(self):
+        from certin_benchmark.analytics.impact import compare
+        now = {"report_id": "R", "incomplete": [], "criteria": [], "mandatory_checks": []}
+        new = dict(now, incomplete=["Q4.d.WASA-01.specificity", "Q3.EX.Ravi Kumar", "Q4.d.WASA-02.specificity",
+                                    "Q5.Cl (language model not available)"])
+        r = compare(now, new, tokens=lambda rec: ("RE-x", "AG-y"))
+        self.assertEqual(r["needs_model"], {"Q3.EX": 1, "Q4.d": 2, "Q5.Cl": 1})
+        self.assertNotIn("WASA", json.dumps(r))
+        self.assertNotIn("Ravi", json.dumps(r))
 
     @needs_numpy
     def test_command(self):

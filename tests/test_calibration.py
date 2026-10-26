@@ -169,6 +169,17 @@ class PassMark(unittest.TestCase):
         self.assertEqual(r["agreement_held_out"]["reports"], 36)
         self.assertEqual(r["agreement_held_out"]["agreement"], 1.0)
         self.assertEqual(r["judgement_agreement"]["kappa"], 1.0)
+        with open(d / "experts.csv", "a", newline="") as fh:
+            csv.writer(fh).writerows([["CAL-000", "e1", "Q1", "n/a"], ["CAL-000", "e2", "Q1", "80"]])
+        rc, out, err = _run_cli("calibrate", "fit-pass-mark", "--records", str(d / "records"),
+                                "--experts", str(d / "experts.csv"))
+        self.assertEqual(rc, 1)
+        self.assertIn("not a score", err)
+        (d / "bad_split.json").write_text("{not json")
+        rc, out, err = _run_cli("calibrate", "fit-pass-mark", "--records", str(d / "records"),
+                                "--experts", str(d / "experts.csv"), "--split", str(d / "bad_split.json"))
+        self.assertEqual(rc, 1)
+        self.assertIn("cannot read the inputs", err)
 
 
 if __name__ == "__main__":

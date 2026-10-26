@@ -288,6 +288,34 @@ def binary_segmentation(x: Sequence[float], min_size: int = 4, penalty: float | 
     return sorted(points)
 
 
+def self_starting_cusum(x: Sequence[float], sigma: float, burn_in: int = 5, k: float = 0.5,
+                        h: float = 5.0) -> list[dict]:
+    """Two-sided self-starting CUSUM (Hawkins, 1987): each value is compared with the mean of the values before it
+    since the last alarm, scaled by its predictive spread sigma * sqrt(1 + 1/m), so that no level has to be known in
+    advance and the uncertainty of the running mean is allowed for. After burn_in values the running sums start; an
+    alarm is raised where one passes h, and monitoring starts afresh from the next value."""
+    a = np.asarray(x, dtype=float)
+    alarms: list[dict] = []
+    start = 0
+    while sigma > 0 and start + burn_in < a.size:
+        hi = lo = 0.0
+        total, count = float(a[start:start + burn_in].sum()), burn_in
+        found = None
+        for i in range(start + burn_in, a.size):
+            u = (a[i] - total / count) / (sigma * math.sqrt(1 + 1 / count))
+            hi, lo = max(0.0, hi + u - k), min(0.0, lo + u + k)
+            if hi > h or lo < -h:
+                found = {"index": i, "direction": "up" if hi > h else "down"}
+                break
+            total += float(a[i])
+            count += 1
+        if found is None:
+            break
+        alarms.append(found)
+        start = found["index"] + 1
+    return alarms
+
+
 def cusum(x: Sequence[float], target: float, sigma: float, k: float = 0.5, h: float = 4.0) -> list[dict]:
     """Two-sided CUSUM on standardised values; an alarm is raised where a running sum passes h (in sigma units) and
     the sum restarts. k is the allowance (half the shift to be detected, in sigma units)."""

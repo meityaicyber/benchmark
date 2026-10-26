@@ -9,6 +9,14 @@ auditee, identifier or free text from a report enters the store: the descriptive
 kept only in the spelling of their controlled lists, any other value as "Other" (profile.py), and a finding is kept
 by its position in the report, not its identifier.
 
+A report keeps one token however it is evaluated again. Its keys are its own identifier together with each
+identifier of its auditing organisation, and the hash of its source file; a later evaluation that shares any key
+with an earlier one is the same report (the same file evaluated against a newer Reference Data Package, in which
+the organisation is identified differently or not at all, or a later version of the report under the same
+organisation and number). An organisation likewise keeps one token across its identifiers: an evaluation that
+gives both its AMBAK code and the identifier of an empanelment set ties the two together. Keys are kept only as
+tokens.
+
 Records from different configurations of the Suite are kept apart by their configuration digest; every analysis
 reads one configuration at a time, since scores from different versions of the benchmark are not comparable.
 """
@@ -57,11 +65,15 @@ CREATE TABLE IF NOT EXISTS component (
 CREATE TABLE IF NOT EXISTS finding (
     eval_id TEXT, finding_no INTEGER, severity TEXT, status TEXT, s_a REAL, s_b REAL, s_c REAL, s_d REAL, cap REAL,
     e REAL, PRIMARY KEY (eval_id, finding_no));
+CREATE TABLE IF NOT EXISTS agency_alias (alias TEXT PRIMARY KEY, agency_token TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS report_alias (alias TEXT PRIMARY KEY, report_token TEXT NOT NULL);
 """
 
 STORE_VERSION = "1"
 CHECK_IDS = re.compile(r"^MC-\d{2}$")
 CRITERION_IDS = re.compile(r"^Q[1-8]$")
+# component names are set in the criteria's code: "T_comp", "E_bar", "Cl", "Q4.a structural completeness"
+COMPONENT_NAMES = re.compile(r"^(Q[1-8]\.[a-z] [a-z -]{1,50}|[A-Za-z][A-Za-z0-9_]{0,15})$")
 RESULTS = {"Pass", "Fail", "Indeterminate", "Not applicable"}
 STATUSES = {"Compliant", "Non-compliant", "Pending review"}
 
@@ -103,42 +115,57 @@ class Pseudonymiser:
         return self.token("check", "certin-benchmark analytics store")
 
 
-def agency_identity(org: dict) -> str | None:
-    """The identifier an evaluation record gives for the auditing organisation: its AMBAK code, else its CERT-In
-    reference, else its identifier in the empanelment set; None where the organisation was not found."""
+def agency_identities(org: dict) -> list[str]:
+    """The identifiers by which an evaluation record identifies the auditing organisation, the most stable first:
+    its AMBAK code, which stays with it when it changes its name, and its identifier in the empanelment set, which
+    is derived from its name and is the only one before CERT-In's register is held. The CERT-In reference is used
+    only where neither is given: it adds nothing to the AMBAK code it comes with, and CERT-In's register gives one
+    reference to two organisations. Empty where the organisation was not found."""
     if not isinstance(org, dict) or not org.get("found"):
-        return None
-    for key in ("ambak_code", "certin_reference", "org_id"):
-        if str(org.get(key) or "").strip():
-            return f"{key}:{str(org[key]).strip()}"
-    return None
+        return []
+    ids = [f"{key}:{str(org[key]).strip()}" for key in ("ambak_code", "org_id") if str(org.get(key) or "").strip()]
+    if not ids and str(org.get("certin_reference") or "").strip():
+        ids = [f"certin_reference:{str(org['certin_reference']).strip()}"]
+    return ids
 
 
-def report_identity(rec: dict) -> str:
-    """What identifies a report: its auditing organisation with the report's identifier, since each organisation
-    numbers its own reports (two organisations may both issue a "VAPT/2025/001"); where the organisation was not
-    identified, or the report gives no identifier, the hash of the source file is added. A later version of a
-    report, under the same organisation and identifier, replaces the earlier one."""
-    org = agency_identity(rec.get("auditing_organisation") or {})
+def agency_identity(org: dict) -> str | None:
+    """The most stable identifier of the auditing organisation in an evaluation record; None where not found."""
+    ids = agency_identities(org)
+    return ids[0] if ids else None
+
+
+def report_keys(rec: dict) -> list[str]:
+    """What can identify a report, the most specific first: the report's identifier with each identifier of its
+    auditing organisation (each organisation numbers its own reports, so two may both issue a "VAPT/2025/001"), and
+    the hash of its source file; the identifier alone only where neither is known."""
     rid = str(rec.get("report_id") or "").strip()
-    file_hash = str((rec.get("source") or {}).get("file_hash") or "").strip() if isinstance(rec.get("source"),
-                                                                                             dict) else ""
-    if org and rid:
-        return f"{org}\x00report:{rid}"
-    if rid:
-        return f"unidentified\x00report:{rid}" + (f"\x00file:{file_hash}" if file_hash else "")
-    if file_hash:
-        return f"{org or 'unidentified'}\x00file:{file_hash}"
-    raise OperatorError("the record identifies neither the report (report_id) with its auditing organisation, nor "
-                        "the source file (source.file_hash)")
+    src = rec.get("source") if isinstance(rec.get("source"), dict) else {}
+    file_hash = str(src.get("file_hash") or "").strip()
+    keys = [f"{org}\x00report:{rid}" for org in agency_identities(rec.get("auditing_organisation") or {})] if rid else []
+    if file_hash and not re.fullmatch(r"(sha256:)?0+", file_hash):     # a placeholder hash identifies nothing
+        keys.append(f"file:{file_hash}")
+    if not keys and rid:
+        keys.append(f"unidentified\x00report:{rid}")
+    if not keys:
+        raise OperatorError("the record identifies neither the report (report_id) nor the source file "
+                            "(source.file_hash)")
+    return keys
 
 
-@lru_cache(maxsize=1)
-def _default_lists() -> tuple[tuple[str, ...], tuple[str, ...]]:
+@lru_cache(maxsize=8)
+def controlled_lists(curated_dir: str | None = None) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The audit types and sectors a profile value may take: those of the Suite's own curated lists, and those of
+    the curated folder given (the folder the records were evaluated with, such as a Reference Data Package's), so
+    that a value a newer package adds is kept rather than recorded as "Other"."""
     from ..config import load_curated
-    cur = load_curated()
-    return (tuple(cur.engagements.get("enumerated_audit_types") or ()),
-            tuple(((cur.regulatory or {}).get("sectors") or {}).keys()))
+    types: dict[str, None] = {}
+    sectors: dict[str, None] = {}
+    for d in (None, curated_dir) if curated_dir else (None,):
+        cur = load_curated(d)
+        types.update(dict.fromkeys(cur.engagements.get("enumerated_audit_types") or ()))
+        sectors.update(dict.fromkeys(((cur.regulatory or {}).get("sectors") or {}).keys()))
+    return tuple(types), tuple(sectors)
 
 
 def _iso_date(value: Any) -> str | None:
@@ -186,6 +213,10 @@ def _iso_timestamp(value: Any) -> str | None:
     return s if re.fullmatch(r"\d{4}-\d{2}-\d{2}(T[0-9:.+\-Z]{1,40})?", s) else None
 
 
+def _eval_id(report_token: str, digest: str) -> str:
+    return hashlib.sha256(f"{report_token}\x00{digest}".encode()).hexdigest()[:24]
+
+
 def is_evaluation_record(rec: Any) -> bool:
     return isinstance(rec, dict) and bool(rec.get("config_digest")) and isinstance(rec.get("mandatory_checks"), list) \
         and isinstance(rec.get("criteria"), list)
@@ -200,9 +231,13 @@ EVALUATION_COLUMNS = (
 
 
 class AnalyticsStore:
-    def __init__(self, path: str | Path, key_path: str | Path | None = None, create_key: bool = False):
-        """key_path is needed to load records and to tokenise new ones; reading the store does not need it."""
+    def __init__(self, path: str | Path, key_path: str | Path | None = None, create_key: bool = False,
+                 curated_dir: str | Path | None = None):
+        """key_path is needed to load records and to tokenise new ones; reading the store does not need it.
+        curated_dir: the curated lists the records were evaluated with, if newer than the Suite's own."""
         self.path = Path(path)
+        self.curated_dir = str(curated_dir) if curated_dir else None
+        self.mapped_to_other: dict[str, int] = {}
         if self.path.is_dir():
             raise OperatorError(f"{self.path} is a folder, not an analytics store")
         if not create_key and not self.path.exists():
@@ -258,27 +293,82 @@ class AnalyticsStore:
             raise OperatorError("this needs the pseudonymisation key (--key)")
         return self.pseudo
 
+    # ---- identities -------------------------------------------------------------------------------------------
+    def _alias(self, table: str, column: str, alias: str) -> str | None:
+        r = self.db.execute(f"SELECT {column} FROM {table} WHERE alias = ?", (alias,)).fetchone()
+        return r[0] if r else None
+
+    def identify(self, rec: dict, write: bool = False) -> tuple[str, str | None]:
+        """The tokens of a record's report and auditing organisation: those the store already gives them where any
+        key matches, else new ones. write records the keys, and merges reports or organisations that the record
+        shows to be one."""
+        tokens = self._tokens()
+        agency_aliases = [tokens.token("agency", i) for i in agency_identities(rec.get("auditing_organisation") or {})]
+        agency = None
+        if agency_aliases:
+            known = [a for a in (self._alias("agency_alias", "agency_token", x) for x in agency_aliases) if a]
+            agency = known[0] if known else agency_aliases[0]
+            if write:
+                for other in dict.fromkeys(known[1:]):
+                    if other != agency:
+                        self.db.execute("UPDATE evaluation SET agency_token = ? WHERE agency_token = ?", (agency, other))
+                        self.db.execute("UPDATE agency_alias SET agency_token = ? WHERE agency_token = ?",
+                                        (agency, other))
+                for x in agency_aliases:
+                    self.db.execute("INSERT OR REPLACE INTO agency_alias VALUES (?, ?)", (x, agency))
+        report_aliases = [tokens.token("report", k) for k in report_keys(rec)]
+        known = [r for r in (self._alias("report_alias", "report_token", x) for x in report_aliases) if r]
+        report = known[0] if known else report_aliases[0]
+        if write:
+            for other in dict.fromkeys(known[1:]):
+                if other != report:
+                    self._merge_report(other, report)
+            for x in report_aliases:
+                self.db.execute("INSERT OR REPLACE INTO report_alias VALUES (?, ?)", (x, report))
+        return report, agency
+
+    def _merge_report(self, old: str, new: str) -> None:
+        """Evaluations of report `old` become evaluations of report `new`; where both have one under the same
+        configuration, the one of the later report date (then the later load) is kept."""
+        for ev in self.db.execute("SELECT * FROM evaluation WHERE report_token = ?", (old,)).fetchall():
+            new_id = _eval_id(new, ev["config_digest"])
+            other = self.db.execute("SELECT report_date, loaded_at FROM evaluation WHERE eval_id = ?",
+                                    (new_id,)).fetchone()
+            if other is not None and ((other["report_date"] or ""), other["loaded_at"]) >= \
+                    ((ev["report_date"] or ""), ev["loaded_at"]):
+                self._delete(ev["eval_id"])
+                continue
+            if other is not None:
+                self._delete(new_id)
+            for table in ("check_result", "criterion", "component", "finding"):
+                self.db.execute(f"UPDATE {table} SET eval_id = ? WHERE eval_id = ?", (new_id, ev["eval_id"]))
+            self.db.execute("UPDATE evaluation SET eval_id = ?, report_token = ? WHERE eval_id = ?",
+                            (new_id, new, ev["eval_id"]))
+        self.db.execute("UPDATE report_alias SET report_token = ? WHERE report_token = ?", (new, old))
+
+    def _delete(self, eval_id: str) -> None:
+        for table in ("evaluation", "check_result", "criterion", "component", "finding"):
+            self.db.execute(f"DELETE FROM {table} WHERE eval_id = ?", (eval_id,))
+
     # ---- records to rows ----------------------------------------------------------------------------------------
-    def row(self, rec: dict, synthetic: bool = False) -> dict:
+    def row(self, rec: dict, synthetic: bool = False, tokens: tuple[str, str | None] | None = None) -> dict:
         """An evaluation record as a row of the store (the form every analysis reads), without storing it."""
         if not is_evaluation_record(rec):
             raise OperatorError("not an evaluation record of the Suite (config_digest, mandatory_checks, criteria)")
         digest = str(rec["config_digest"])
         if not re.fullmatch(r"(synthetic-)?[0-9a-f]{8,64}", digest):
             raise OperatorError(f"config_digest {digest[:40]!r} is not the digest of a configuration of the Suite")
-        tokens = self._tokens()
-        report_token = tokens.token("report", report_identity(rec))
-        org = agency_identity(rec.get("auditing_organisation") or {})
+        report_token, agency_token = tokens or self.identify(rec)
         prof = rec.get("report_profile") if isinstance(rec.get("report_profile"), dict) else {}
         sev = prof.get("severity_counts") if isinstance(prof.get("severity_counts"), dict) else {}
-        types_allowed, sectors_allowed = _default_lists()
+        types_allowed, sectors_allowed = controlled_lists(self.curated_dir)
         # every descriptive value again through its controlled list, whatever wrote the record
         raw_types = prof.get("audit_types") if isinstance(prof.get("audit_types"), list) else []
         audit_types = [t for t in (controlled(v, types_allowed) for v in raw_types) if t]
         status = rec.get("compliance_status") if rec.get("compliance_status") in STATUSES else None
         return {
-            "eval_id": hashlib.sha256(f"{report_token}\x00{digest}".encode()).hexdigest()[:24],
-            "report_token": report_token, "agency_token": tokens.token("agency", org) if org else None,
+            "eval_id": _eval_id(report_token, digest),
+            "report_token": report_token, "agency_token": agency_token,
             "suite_version": v if re.fullmatch(r"\d+(\.\d+){0,3}", v := str(rec.get("suite_version") or "")) else None,
             "config_digest": digest,
             "package_id": _package_id(rec), "evaluated_at": _iso_timestamp(rec.get("evaluated_at")),
@@ -301,7 +391,7 @@ class AnalyticsStore:
             "cap_applied": _score(rec.get("cap_applied")),
             "referrals": len(rec.get("referrals") or []), "incomplete": len(rec.get("incomplete") or []),
             "synthetic": int(bool(synthetic or rec.get("synthetic"))),
-            "loaded_at": _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat(),
+            "loaded_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
             "checks": {c["id"]: c.get("result") for c in rec["mandatory_checks"]
                        if isinstance(c, dict) and CHECK_IDS.match(str(c.get("id"))) and c.get("result") in RESULTS},
             "criteria": {c["id"]: _score(c.get("score")) for c in rec["criteria"]
@@ -313,12 +403,17 @@ class AnalyticsStore:
     def load_record(self, rec: dict, synthetic: bool = False) -> tuple[str, bool]:
         """Add one evaluation record, replacing any earlier evaluation of the same report under the same
         configuration; returns its eval_id and whether it replaced one."""
-        row = self.row(rec, synthetic)
+        if not is_evaluation_record(rec):
+            raise OperatorError("not an evaluation record of the Suite (config_digest, mandatory_checks, criteria)")
+        row = self.row(rec, synthetic, tokens=self.identify(rec, write=True))
         eval_id = row["eval_id"]
+        prof = rec.get("report_profile") if isinstance(rec.get("report_profile"), dict) else {}
+        for field in ("engagement_type", "sector", "entity_type", "report_type", "report_status"):
+            if prof.get(field) not in (None, "", "Other") and row[field] == "Other":
+                self.mapped_to_other[field] = self.mapped_to_other.get(field, 0) + 1
         db = self.db
         replaced = db.execute("SELECT 1 FROM evaluation WHERE eval_id = ?", (eval_id,)).fetchone() is not None
-        for table in ("evaluation", "check_result", "criterion", "component", "finding"):
-            db.execute(f"DELETE FROM {table} WHERE eval_id = ?", (eval_id,))
+        self._delete(eval_id)
         values = tuple(json.dumps(row[c]) if c in ("audit_types", "modules") else row[c] for c in EVALUATION_COLUMNS)
         db.execute(f"INSERT INTO evaluation ({', '.join(EVALUATION_COLUMNS)}) VALUES ({', '.join('?' * len(values))})",
                    values)
@@ -336,12 +431,11 @@ class AnalyticsStore:
                         _score(cr.get("weight"))))
             components = cr.get("components") if isinstance(cr.get("components"), dict) else {}
             for name, comp in components.items():
-                if isinstance(comp, dict) and re.fullmatch(r"[A-Za-z0-9_]{1,20}", str(name)):
+                if isinstance(comp, dict) and COMPONENT_NAMES.match(str(name)):
                     db.execute("INSERT OR REPLACE INTO component VALUES (?, ?, ?, ?, ?)",
                                (eval_id, cr["id"], str(name), _num(comp.get("score")), _num(comp.get("weight"))))
             if cr["id"] == "Q4" and isinstance(cr.get("per_finding"), dict):
                 q4 = cr["per_finding"]
-        prof = rec.get("report_profile") if isinstance(rec.get("report_profile"), dict) else {}
         findings = prof.get("finding_list") if isinstance(prof.get("finding_list"), list) else []
         for i, f in enumerate(findings, 1):
             if not isinstance(f, dict):
@@ -362,6 +456,7 @@ class AnalyticsStore:
             p = Path(p)
             files += sorted(q for q in p.rglob("*.json") if not q.name.endswith(".meta.json")) if p.is_dir() else [p]
         loaded, replaced, no_date, provisional = 0, 0, 0, 0
+        self.mapped_to_other = {}
         skipped: list[str] = []
         seen: dict[str, Path] = {}
         same_report: list[str] = []
@@ -392,7 +487,10 @@ class AnalyticsStore:
             provisional += bool(row["provisional"])
         self.db.commit()
         return {"loaded": loaded, "replaced_earlier_loads": replaced, "same_report_in_this_load": same_report,
-                "without_report_date": no_date, "provisional": provisional, "skipped": skipped}
+                "without_report_date": no_date, "provisional": provisional,
+                # values outside the controlled lists given: load with the curated lists the records were evaluated
+                # with (--curated, --rdp or --rdp-store) if these are values a newer package adds
+                "values_recorded_as_other": dict(sorted(self.mapped_to_other.items())), "skipped": skipped}
 
     # ---- reading ------------------------------------------------------------------------------------------------
     def versions(self) -> list[dict]:

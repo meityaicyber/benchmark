@@ -334,7 +334,10 @@ def cmd_calibrate(a: argparse.Namespace) -> int:
         except (ValueError, KeyError, AttributeError) as exc:     # JSON that does not parse, a CSV without the columns
             raise OperatorError(f"cannot read the inputs: {type(exc).__name__}: {exc} (records are evaluation "
                                 "records; the expert table has the columns report_id, expert, item, value)") from None
-        ref, pending = cal.adjudicate(table)
+        try:
+            ref, pending = cal.adjudicate(table)
+        except ValueError as exc:                                 # a score that is not a number, such as "n/a"
+            raise OperatorError(f"the expert table holds a value that is not a score: {exc}") from None
         if split is not None and not (isinstance(split, dict) and isinstance(split.get("calibration"), list)
                                       and isinstance(split.get("held_out"), list)):
             raise OperatorError(f"{a.split} is not a split written by calibrate split (lists calibration and "
