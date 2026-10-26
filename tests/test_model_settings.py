@@ -9,15 +9,21 @@ import copy
 import io
 import json
 import shutil
+import struct
 import tempfile
 import threading
 import time
 import unittest
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import yaml
-from PIL import Image
+
+try:
+    from PIL import Image
+except ImportError:          # Pillow is a dependency of the Suite; without it only the conversion test is skipped
+    Image = None
 
 from helpers import EVAL_DATE, HERE, ROOT, criterion, refdata, sample, scripted_backend
 
@@ -97,9 +103,22 @@ class MockServer:
         self.httpd.server_close()
 
 
+def _png(width: int, height: int, color: tuple[int, int, int]) -> bytes:
+    """A PNG of one colour, written without Pillow."""
+    raw = b"".join(b"\x00" + bytes(color) * width for _ in range(height))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    return (PNG_SIGNATURE + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
 def png_file(folder: Path, name="shot.png", fmt="PNG", color=(200, 30, 30)) -> Path:
     path = folder / name
-    Image.new("RGB", (40, 20), color).save(path, format=fmt)
+    if fmt == "PNG":
+        path.write_bytes(_png(40, 20, color))
+    else:
+        Image.new("RGB", (40, 20), color).save(path, format=fmt)
     return path
 
 
@@ -150,6 +169,7 @@ class RequestSettings(ServerTestCase):
         for key in ("top_p", "top_k", "min_p", "chat_template_kwargs", "mm_processor_kwargs"):
             self.assertNotIn(key, body)
 
+    @unittest.skipIf(Image is None, "Pillow is not installed (pip install Pillow)")
     def test_other_image_formats_are_sent_as_png_and_jpeg_as_stored(self):
         b = self.backend()
         bmp = png_file(self.tmp, "shot.bmp", "BMP")

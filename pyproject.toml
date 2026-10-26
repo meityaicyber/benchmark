@@ -13,6 +13,9 @@ dependencies = [
     "PyYAML>=6.0",
     "cvss>=3.2",
     "cryptography>=41",
+    # proof-of-concept images other than JPEG and PNG (JPEG 2000, TIFF and others, as Objective 1 stores them) are
+    # converted to PNG before they are sent to the vision model
+    "Pillow>=10",
 ]
 
 [project.optional-dependencies]
