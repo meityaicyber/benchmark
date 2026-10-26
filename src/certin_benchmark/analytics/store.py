@@ -9,13 +9,15 @@ auditee, identifier or free text from a report enters the store: the descriptive
 kept only in the spelling of their controlled lists, any other value as "Other" (profile.py), and a finding is kept
 by its position in the report, not its identifier.
 
-A report keeps one token however it is evaluated again. Its keys are its own identifier together with each
-identifier of its auditing organisation, and the hash of its source file; a later evaluation that shares any key
-with an earlier one is the same report (the same file evaluated against a newer Reference Data Package, in which
-the organisation is identified differently or not at all, or a later version of the report under the same
-organisation and number). An organisation likewise keeps one token across its identifiers: an evaluation that
-gives both its AMBAK code and the identifier of an empanelment set ties the two together. Keys are kept only as
-tokens.
+A report keeps one token however it is evaluated again. Its own identifier together with an identifier of its
+auditing organisation is a key that identifies it; the hash of its source file identifies it too, provided the
+two evaluations do not give different report identifiers or different organisations (one file can hold two
+reports, and a hash can be copied from a template). So the same file evaluated against a newer Reference Data
+Package, in which the organisation is identified differently or not at all, is the same report, and so is a later
+version of the report under the same organisation and number. Of two evaluations of one report under one
+configuration, the store keeps the one of the later report date (of equal dates, the one loaded last), whatever
+the order of loading. An organisation likewise keeps one token across its identifiers: an evaluation that gives
+both its AMBAK code and the identifier of an empanelment set ties the two together. Keys are kept only as tokens.
 
 Records from different configurations of the Suite are kept apart by their configuration digest; every analysis
 reads one configuration at a time, since scores from different versions of the benchmark are not comparable.
@@ -67,6 +69,7 @@ CREATE TABLE IF NOT EXISTS finding (
     e REAL, PRIMARY KEY (eval_id, finding_no));
 CREATE TABLE IF NOT EXISTS agency_alias (alias TEXT PRIMARY KEY, agency_token TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS report_alias (alias TEXT PRIMARY KEY, report_token TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS report_info (report_token TEXT PRIMARY KEY, rid_token TEXT, agency_token TEXT);
 """
 
 STORE_VERSION = "1"
@@ -135,18 +138,20 @@ def agency_identity(org: dict) -> str | None:
     return ids[0] if ids else None
 
 
-def report_keys(rec: dict) -> list[str]:
-    """What can identify a report, the most specific first: the report's identifier with each identifier of its
-    auditing organisation (each organisation numbers its own reports, so two may both issue a "VAPT/2025/001"), and
-    the hash of its source file; the identifier alone only where neither is known."""
+def report_keys(rec: dict) -> list[tuple[str, bool]]:
+    """What can identify a report, as (key, strong), the most specific first. Strong: the report's identifier with
+    an identifier of its auditing organisation (each organisation numbers its own reports, so two may both issue a
+    "VAPT/2025/001"). Weak, joining two evaluations only where they give no different report identifier or
+    organisation: the hash of the source file, and the identifier alone where nothing else is known."""
     rid = str(rec.get("report_id") or "").strip()
     src = rec.get("source") if isinstance(rec.get("source"), dict) else {}
     file_hash = str(src.get("file_hash") or "").strip()
-    keys = [f"{org}\x00report:{rid}" for org in agency_identities(rec.get("auditing_organisation") or {})] if rid else []
+    keys = [(f"{org}\x00report:{rid}", True) for org in agency_identities(rec.get("auditing_organisation") or {})] \
+        if rid else []
     if file_hash and not re.fullmatch(r"(sha256:)?0+", file_hash):     # a placeholder hash identifies nothing
-        keys.append(f"file:{file_hash}")
+        keys.append((f"file:{file_hash}", False))
     if not keys and rid:
-        keys.append(f"unidentified\x00report:{rid}")
+        keys.append((f"unidentified\x00report:{rid}", False))
     if not keys:
         raise OperatorError("the record identifies neither the report (report_id) nor the source file "
                             "(source.file_hash)")
@@ -299,33 +304,63 @@ class AnalyticsStore:
         return r[0] if r else None
 
     def identify(self, rec: dict, write: bool = False) -> tuple[str, str | None]:
-        """The tokens of a record's report and auditing organisation: those the store already gives them where any
-        key matches, else new ones. write records the keys, and merges reports or organisations that the record
-        shows to be one."""
+        """The tokens of a record's report and auditing organisation: those the store already gives them where a key
+        matches, else new ones. write records the keys, and merges reports or organisations that the record shows
+        to be one. Without write nothing is changed, and the tokens are those a load would give."""
         tokens = self._tokens()
         agency_aliases = [tokens.token("agency", i) for i in agency_identities(rec.get("auditing_organisation") or {})]
-        agency = None
-        if agency_aliases:
-            known = [a for a in (self._alias("agency_alias", "agency_token", x) for x in agency_aliases) if a]
-            agency = known[0] if known else agency_aliases[0]
-            if write:
-                for other in dict.fromkeys(known[1:]):
-                    if other != agency:
-                        self.db.execute("UPDATE evaluation SET agency_token = ? WHERE agency_token = ?", (agency, other))
-                        self.db.execute("UPDATE agency_alias SET agency_token = ? WHERE agency_token = ?",
-                                        (agency, other))
-                for x in agency_aliases:
-                    self.db.execute("INSERT OR REPLACE INTO agency_alias VALUES (?, ?)", (x, agency))
-        report_aliases = [tokens.token("report", k) for k in report_keys(rec)]
-        known = [r for r in (self._alias("report_alias", "report_token", x) for x in report_aliases) if r]
-        report = known[0] if known else report_aliases[0]
+        known_agencies = list(dict.fromkeys(
+            a for a in (self._alias("agency_alias", "agency_token", x) for x in agency_aliases) if a))
+        agency = known_agencies[0] if known_agencies else (agency_aliases[0] if agency_aliases else None)
+        same_agency = set(known_agencies) | ({agency} if agency else set())
+        rid = str(rec.get("report_id") or "").strip()
+        rid_token = tokens.token("rid", rid) if rid else None
+
+        def compatible(report: str) -> bool:
+            info = self.db.execute("SELECT rid_token, agency_token FROM report_info WHERE report_token = ?",
+                                   (report,)).fetchone()
+            if info is None:
+                return True
+            return (rid_token is None or info["rid_token"] is None or info["rid_token"] == rid_token) and \
+                (agency is None or info["agency_token"] is None or info["agency_token"] in same_agency)
+
+        keys = [(tokens.token("report", k), strong) for k, strong in report_keys(rec)]
+        matched: list[str] = []
+        for alias, strong in keys:
+            found = self._alias("report_alias", "report_token", alias)
+            if found and (strong or compatible(found)):
+                matched.append(found)
+        matched = list(dict.fromkeys(matched))
+        if matched:
+            report = matched[0]
+        else:
+            free = [a for a, _ in keys if self._alias("report_alias", "report_token", a) is None]
+            report = free[0] if free else tokens.token("report", "\x00".join(a for a, _ in keys))
         if write:
-            for other in dict.fromkeys(known[1:]):
-                if other != report:
-                    self._merge_report(other, report)
-            for x in report_aliases:
-                self.db.execute("INSERT OR REPLACE INTO report_alias VALUES (?, ?)", (x, report))
+            for other in known_agencies[1:]:
+                self.db.execute("UPDATE evaluation SET agency_token = ? WHERE agency_token = ?", (agency, other))
+                self.db.execute("UPDATE agency_alias SET agency_token = ? WHERE agency_token = ?", (agency, other))
+                self.db.execute("UPDATE report_info SET agency_token = ? WHERE agency_token = ?", (agency, other))
+            for x in agency_aliases:
+                self.db.execute("INSERT OR REPLACE INTO agency_alias VALUES (?, ?)", (x, agency))
+            for other in matched[1:]:
+                self._merge_report(other, report)
+            for alias, strong in keys:
+                found = self._alias("report_alias", "report_token", alias)
+                if found is None or found == report or strong:
+                    self.db.execute("INSERT OR REPLACE INTO report_alias VALUES (?, ?)", (alias, report))
+                # a weak key that already identifies another, different report stays with that report
+            info = self.db.execute("SELECT rid_token, agency_token FROM report_info WHERE report_token = ?",
+                                   (report,)).fetchone()
+            self.db.execute("INSERT OR REPLACE INTO report_info VALUES (?, ?, ?)",
+                            (report, rid_token or (info["rid_token"] if info else None),
+                             agency or (info["agency_token"] if info else None)))
         return report, agency
+
+    @staticmethod
+    def _later(a, b) -> bool:
+        """Whether evaluation a is to be kept over b of the same report: the later report date, then the later load."""
+        return ((a["report_date"] or ""), a["loaded_at"] or "") >= ((b["report_date"] or ""), b["loaded_at"] or "")
 
     def _merge_report(self, old: str, new: str) -> None:
         """Evaluations of report `old` become evaluations of report `new`; where both have one under the same
@@ -334,8 +369,7 @@ class AnalyticsStore:
             new_id = _eval_id(new, ev["config_digest"])
             other = self.db.execute("SELECT report_date, loaded_at FROM evaluation WHERE eval_id = ?",
                                     (new_id,)).fetchone()
-            if other is not None and ((other["report_date"] or ""), other["loaded_at"]) >= \
-                    ((ev["report_date"] or ""), ev["loaded_at"]):
+            if other is not None and self._later(other, ev):
                 self._delete(ev["eval_id"])
                 continue
             if other is not None:
@@ -345,6 +379,13 @@ class AnalyticsStore:
             self.db.execute("UPDATE evaluation SET eval_id = ?, report_token = ? WHERE eval_id = ?",
                             (new_id, new, ev["eval_id"]))
         self.db.execute("UPDATE report_alias SET report_token = ? WHERE report_token = ?", (new, old))
+        old_info = self.db.execute("SELECT rid_token, agency_token FROM report_info WHERE report_token = ?",
+                                   (old,)).fetchone()
+        if old_info is not None:
+            self.db.execute("UPDATE report_info SET rid_token = coalesce(rid_token, ?), "
+                            "agency_token = coalesce(agency_token, ?) WHERE report_token = ?",
+                            (old_info["rid_token"], old_info["agency_token"], new))
+            self.db.execute("DELETE FROM report_info WHERE report_token = ?", (old,))
 
     def _delete(self, eval_id: str) -> None:
         for table in ("evaluation", "check_result", "criterion", "component", "finding"):
@@ -400,19 +441,41 @@ class AnalyticsStore:
         }
 
     # ---- loading ------------------------------------------------------------------------------------------------
-    def load_record(self, rec: dict, synthetic: bool = False) -> tuple[str, bool]:
-        """Add one evaluation record, replacing any earlier evaluation of the same report under the same
-        configuration; returns its eval_id and whether it replaced one."""
+    def load_record(self, rec: dict, synthetic: bool = False) -> tuple[str, str]:
+        """Add one evaluation record; returns its eval_id and what happened: "added", "replaced" (an earlier
+        evaluation of the same report under the same configuration), or "kept_later" (the store already holds an
+        evaluation of the report of a later report date, which is kept). Nothing changes if the record is refused."""
+        self._check(rec)
+        self.db.execute("SAVEPOINT load_record")
+        try:
+            outcome = self._load(rec, synthetic)
+        except BaseException:
+            self.db.execute("ROLLBACK TO load_record")
+            self.db.execute("RELEASE load_record")
+            raise
+        self.db.execute("RELEASE load_record")
+        return outcome
+
+    def _check(self, rec: dict) -> None:
+        """Refuse a record before anything is written."""
         if not is_evaluation_record(rec):
             raise OperatorError("not an evaluation record of the Suite (config_digest, mandatory_checks, criteria)")
+        if not re.fullmatch(r"(synthetic-)?[0-9a-f]{8,64}", str(rec["config_digest"])):
+            raise OperatorError(f"config_digest {str(rec['config_digest'])[:40]!r} is not the digest of a "
+                                "configuration of the Suite")
+        report_keys(rec)
+
+    def _load(self, rec: dict, synthetic: bool) -> tuple[str, str]:
         row = self.row(rec, synthetic, tokens=self.identify(rec, write=True))
         eval_id = row["eval_id"]
+        db = self.db
+        held = db.execute("SELECT report_date, loaded_at FROM evaluation WHERE eval_id = ?", (eval_id,)).fetchone()
+        if held is not None and not self._later(row, held):
+            return eval_id, "kept_later"
         prof = rec.get("report_profile") if isinstance(rec.get("report_profile"), dict) else {}
         for field in ("engagement_type", "sector", "entity_type", "report_type", "report_status"):
             if prof.get(field) not in (None, "", "Other") and row[field] == "Other":
                 self.mapped_to_other[field] = self.mapped_to_other.get(field, 0) + 1
-        db = self.db
-        replaced = db.execute("SELECT 1 FROM evaluation WHERE eval_id = ?", (eval_id,)).fetchone() is not None
         self._delete(eval_id)
         values = tuple(json.dumps(row[c]) if c in ("audit_types", "modules") else row[c] for c in EVALUATION_COLUMNS)
         db.execute(f"INSERT INTO evaluation ({', '.join(EVALUATION_COLUMNS)}) VALUES ({', '.join('?' * len(values))})",
@@ -446,20 +509,19 @@ class AnalyticsStore:
                        (eval_id, i, f.get("severity") if f.get("severity") in SEVERITIES else None,
                         finding_status(f.get("status")), _num(pf.get("S_a")), _num(pf.get("S_b")),
                         _num(pf.get("S_c")), _num(pf.get("S_d")), _num(pf.get("cap")), _num(pf.get("E"))))
-        return eval_id, replaced
+        return eval_id, "replaced" if held is not None else "added"
 
     def load_paths(self, paths: Iterable[str | Path], synthetic: bool = False) -> dict:
         """Load evaluation records from JSON files, or from every *.json file in the folders given. A file that is
-        not an evaluation record, or cannot be read, is skipped with the reason; the others are loaded."""
+        not an evaluation record, or cannot be read, is skipped with the reason, and changes nothing; the others
+        are loaded."""
         files: list[Path] = []
         for p in paths:
             p = Path(p)
             files += sorted(q for q in p.rglob("*.json") if not q.name.endswith(".meta.json")) if p.is_dir() else [p]
-        loaded, replaced, no_date, provisional = 0, 0, 0, 0
         self.mapped_to_other = {}
         skipped: list[str] = []
-        seen: dict[str, Path] = {}
-        same_report: list[str] = []
+        outcomes = {"added": 0, "replaced": 0, "kept_later": 0}
         for f in files:
             try:
                 rec = json.loads(f.read_text(encoding="utf-8"))
@@ -470,24 +532,22 @@ class AnalyticsStore:
                 skipped.append(f"{f}: not an evaluation record")
                 continue
             try:
-                eval_id, was = self.load_record(rec, synthetic)
+                _, outcome = self.load_record(rec, synthetic)
             except (OperatorError, ValueError, TypeError, KeyError, AttributeError) as exc:
                 skipped.append(f"{f}: {exc}")
                 continue
-            loaded += 1
-            if eval_id in seen:
-                same_report.append(f"{f} replaced {seen[eval_id]} (the same report under the same configuration)")
-            elif was:
-                replaced += 1
-            seen[eval_id] = f
-        for eval_id in seen:
-            row = self.db.execute("SELECT report_date, provisional FROM evaluation WHERE eval_id = ?",
-                                  (eval_id,)).fetchone()
-            no_date += row["report_date"] is None
-            provisional += bool(row["provisional"])
+            outcomes[outcome] += 1
         self.db.commit()
-        return {"loaded": loaded, "replaced_earlier_loads": replaced, "same_report_in_this_load": same_report,
-                "without_report_date": no_date, "provisional": provisional,
+        counts = self.db.execute("SELECT count(*) AS n, sum(report_date IS NULL) AS no_date, "
+                                 "sum(provisional) AS provisional FROM evaluation").fetchone()
+        return {"read": outcomes["added"] + outcomes["replaced"] + outcomes["kept_later"],
+                "added": outcomes["added"],
+                # an evaluation of a report the store already held under the same configuration: the same file
+                # evaluated again, or a later version of the report under the same organisation and number
+                "replaced": outcomes["replaced"],
+                "not_loaded_as_older": outcomes["kept_later"],
+                "store": {"evaluations": counts["n"], "without_report_date": counts["no_date"] or 0,
+                          "provisional": counts["provisional"] or 0},
                 # values outside the controlled lists given: load with the curated lists the records were evaluated
                 # with (--curated, --rdp or --rdp-store) if these are values a newer package adds
                 "values_recorded_as_other": dict(sorted(self.mapped_to_other.items())), "skipped": skipped}

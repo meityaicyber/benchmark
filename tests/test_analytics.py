@@ -191,10 +191,10 @@ class Store(unittest.TestCase):
         with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
             st.load_record(_record("VAPT/2025/001", ambak="2099000001"))
             st.load_record(_record("VAPT/2025/001", ambak="2099000002"))       # another agency's own numbering
-            _, replaced = st.load_record(_record("VAPT/2025/001", ambak="2099000001", q=75.0))   # a later version
+            _, outcome = st.load_record(_record("VAPT/2025/001", ambak="2099000001", q=75.0))   # evaluated again
             st.db.commit()
             rows = st.evaluations()
-        self.assertTrue(replaced)
+        self.assertEqual(outcome, "replaced")
         self.assertEqual(len(rows), 2)
         self.assertEqual(sorted(r["quality_score"] for r in rows), [70.0, 75.0])
         with self.assertRaises(OperatorError):
@@ -216,11 +216,11 @@ class Store(unittest.TestCase):
         with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
             st.load_record(first)
             st.load_record(other)
-            _, replaced_again = st.load_record(again)
-            _, replaced_lost = st.load_record(lost)
+            _, outcome_again = st.load_record(again)
+            _, outcome_lost = st.load_record(lost)
             st.db.commit()
             rows = st.evaluations()
-        self.assertTrue(replaced_again and replaced_lost)
+        self.assertEqual((outcome_again, outcome_lost), ("replaced", "replaced"))
         self.assertEqual(len(rows), 2)
         self.assertEqual(sorted(r["quality_score"] for r in rows), [70.0, 76.0])
         self.assertEqual(len({r["agency_token"] for r in rows if r["agency_token"]}), 1)   # one organisation
@@ -239,10 +239,9 @@ class Store(unittest.TestCase):
         with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
             result = st.load_paths([d / "in"])
             self.assertEqual(len(st.evaluations()), 1)
-        self.assertEqual(result["loaded"], 3)
+        self.assertEqual((result["read"], result["added"], result["replaced"]), (3, 2, 1))
         self.assertEqual(len(result["skipped"]), 3)
-        self.assertEqual(result["without_report_date"], 1)
-        self.assertEqual(len(result["same_report_in_this_load"]), 1)
+        self.assertEqual(result["store"], {"evaluations": 2, "without_report_date": 1, "provisional": 0})
         self.assertTrue(any("truth.json: not an evaluation record" in x for x in result["skipped"]))
 
     def test_a_store_that_is_not_one(self):
@@ -259,6 +258,91 @@ class Store(unittest.TestCase):
         other.close()
         with self.assertRaises(OperatorError):
             AnalyticsStore(d / "other.sqlite")
+
+    @staticmethod
+    def _version(rid, ambak, file_hash, date, q, org_id=None):
+        rec = _record(rid, ambak=ambak, q=q, date=date)
+        if org_id:
+            rec["auditing_organisation"] = dict(rec["auditing_organisation"] if ambak else {"found": True},
+                                                org_id=org_id)
+        rec["source"] = {"file_hash": file_hash}
+        return rec
+
+    def test_merges_inside_one_load(self):
+        d = _tmp()
+        (d / "in").mkdir()
+        f1, f2 = "sha256:" + "11" * 32, "sha256:" + "22" * 32
+        batch = [self._version("R/1", None, f1, "2025-03-01", 60.0),                       # organisation not found
+                 self._version("R/1", "2099000005", f2, "2025-06-01", 80.0),               # the revised version
+                 self._version("R/1", "2099000005", f1, "2025-03-01", 61.0)]               # the first, evaluated again
+        for i, rec in enumerate(batch):
+            (d / "in" / f"{i}.json").write_text(json.dumps(rec))
+        with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
+            result = st.load_paths([d / "in"])
+            rows = st.evaluations()
+            ids = {r[0] for r in st.db.execute("SELECT eval_id FROM evaluation")}
+            orphans = [t for t in ("check_result", "criterion", "component", "finding")
+                       if st.db.execute(f"SELECT count(*) FROM {t} WHERE eval_id NOT IN "
+                                        "(SELECT eval_id FROM evaluation)").fetchone()[0]]
+        self.assertEqual(result["skipped"], [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["report_date"], rows[0]["quality_score"]), ("2025-06-01", 80.0))
+        self.assertEqual(len(ids), 1)
+        self.assertEqual(orphans, [])
+
+    def test_a_refused_record_changes_nothing(self):
+        d = _tmp()
+        a = self._version("R/3", "2099000001", "sha256:" + "33" * 32, "2025-01-01", 70.0)
+        b = self._version("R/4", "2099000002", "sha256:" + "44" * 32, "2025-01-01", 71.0)
+        with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
+            st.load_record(a)
+            st.load_record(b)
+            before = [dict(r) for r in st.db.execute("SELECT * FROM report_alias ORDER BY alias")]
+            agencies = [dict(r) for r in st.db.execute("SELECT * FROM agency_alias ORDER BY alias")]
+            joining = self._version("R/3", "2099000001", "sha256:" + "44" * 32, "2025-01-01", 72.0)
+            joining["config_digest"] = "not a digest"
+            with self.assertRaises(OperatorError):
+                st.load_record(joining)                   # would join R/3 and R/4 through the file hash
+            no_keys = _record("", ambak="2099000001")
+            no_keys["auditing_organisation"]["org_id"] = "certin-emp:x"
+            no_keys["auditing_organisation"]["ambak_code"] = "2099000002"
+            with self.assertRaises(OperatorError):
+                st.load_record(no_keys)                   # would join the two organisations
+            from unittest import mock
+            valid_join = self._version("R/3", "2099000001", "sha256:" + "44" * 32, "2025-01-01", 72.0)
+            valid_join["auditing_organisation"]["org_id"] = "certin-emp:y"
+            with mock.patch.object(st, "row", side_effect=ValueError("failed after the keys were written")), \
+                    self.assertRaises(ValueError):
+                st.load_record(valid_join)                # a failure part way through is rolled back
+            self.assertEqual([dict(r) for r in st.db.execute("SELECT * FROM report_alias ORDER BY alias")], before)
+            self.assertEqual([dict(r) for r in st.db.execute("SELECT * FROM agency_alias ORDER BY alias")], agencies)
+            self.assertEqual(len(st.evaluations()), 2)
+
+    def test_a_shared_file_hash_does_not_join_different_reports(self):
+        d = _tmp()
+        shared = "sha256:" + "55" * 32
+        with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
+            st.load_record(self._version("WEB/2025/01", "2099000001", shared, "2025-02-01", 70.0))
+            _, outcome = st.load_record(self._version("MOB/2025/09", "2099000002", shared, "2025-02-01", 71.0))
+            st.db.commit()
+            self.assertEqual(outcome, "added")
+            self.assertEqual(len(st.evaluations()), 2)
+            # the same file and number, the organisation not found this time: the first report
+            _, outcome = st.load_record(self._version("WEB/2025/01", None, shared, "2025-02-01", 72.0))
+            self.assertEqual(outcome, "replaced")
+            self.assertEqual(sorted(r["quality_score"] for r in st.evaluations()), [71.0, 72.0])
+
+    def test_the_later_version_is_kept_whatever_the_order(self):
+        march = self._version("R/9", "2099000007", "sha256:" + "66" * 32, "2025-03-01", 60.0)
+        june = self._version("R/9", "2099000007", "sha256:" + "77" * 32, "2025-06-01", 85.0)
+        again = self._version("R/9", None, "sha256:" + "66" * 32, "2025-03-01", 62.0)   # March, not identified
+        for order in ([march, june, again], [june, march, again], [again, june, march], [june, again, march]):
+            d = _tmp()
+            with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
+                for rec in order:
+                    st.load_record(rec)
+                rows = st.evaluations()
+            self.assertEqual([(r["report_date"], r["quality_score"]) for r in rows], [("2025-06-01", 85.0)])
 
     def test_values_of_the_lists_the_records_were_evaluated_with_are_kept(self):
         import shutil
@@ -710,7 +794,7 @@ class SmallStores(unittest.TestCase):
                                 "--key", str(d / "k.key"))
         self.assertEqual(rc, 0, err)
         self.assertIn("created a new pseudonymisation key", err)
-        self.assertEqual(json.loads(out)["loaded"], 0)
+        self.assertEqual(json.loads(out)["read"], 0)
 
 
 # ---- the command line -------------------------------------------------------------------------------------------------
@@ -730,7 +814,7 @@ class Commands(unittest.TestCase):
         cls.load_err = err
 
     def test_load_and_versions(self):
-        self.assertEqual(self.loaded["loaded"], 400)
+        self.assertEqual(self.loaded["added"], 400)
         self.assertIn("created a new pseudonymisation key", self.load_err)
         rc, out, _ = _run_cli("analytics", "versions", "--store", self.store)
         self.assertEqual(rc, 0)
