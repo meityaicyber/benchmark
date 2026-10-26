@@ -142,13 +142,18 @@ def report_keys(rec: dict) -> list[tuple[str, bool]]:
     """What can identify a report, as (key, strong), the most specific first. Strong: the report's identifier with
     an identifier of its auditing organisation (each organisation numbers its own reports, so two may both issue a
     "VAPT/2025/001"). Weak, joining two evaluations only where they give no different report identifier or
-    organisation: the hash of the source file, and the identifier alone where nothing else is known."""
+    organisation: the source file with the report's identifier (one file can hold several reports), the source file
+    alone, and the identifier alone where nothing else is known."""
     rid = str(rec.get("report_id") or "").strip()
     src = rec.get("source") if isinstance(rec.get("source"), dict) else {}
     file_hash = str(src.get("file_hash") or "").strip()
+    if re.fullmatch(r"(sha256:)?0+", file_hash):                        # a placeholder hash identifies nothing
+        file_hash = ""
     keys = [(f"{org}\x00report:{rid}", True) for org in agency_identities(rec.get("auditing_organisation") or {})] \
         if rid else []
-    if file_hash and not re.fullmatch(r"(sha256:)?0+", file_hash):     # a placeholder hash identifies nothing
+    if file_hash and rid:
+        keys.append((f"file:{file_hash}\x00report:{rid}", False))
+    if file_hash:
         keys.append((f"file:{file_hash}", False))
     if not keys and rid:
         keys.append((f"unidentified\x00report:{rid}", False))
@@ -335,7 +340,14 @@ class AnalyticsStore:
             report = matched[0]
         else:
             free = [a for a, _ in keys if self._alias("report_alias", "report_token", a) is None]
-            report = free[0] if free else tokens.token("report", "\x00".join(a for a, _ in keys))
+            if free:
+                report = free[0]
+            else:
+                # every key is held by a different report (a file holding reports of other organisations, and no
+                # report identifier): a key of its own, from its keys and its organisation, registered below
+                fallback = tokens.token("report", "\x00".join([a for a, _ in keys] + [agency or "unidentified"]))
+                keys.append((fallback, False))
+                report = self._alias("report_alias", "report_token", fallback) or fallback
         if write:
             for other in known_agencies[1:]:
                 self.db.execute("UPDATE evaluation SET agency_token = ? WHERE agency_token = ?", (agency, other))

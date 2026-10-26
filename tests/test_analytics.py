@@ -332,6 +332,38 @@ class Store(unittest.TestCase):
             self.assertEqual(outcome, "replaced")
             self.assertEqual(sorted(r["quality_score"] for r in st.evaluations()), [71.0, 72.0])
 
+    def test_reports_sharing_a_file_stay_apart_and_are_found_again(self):
+        import itertools
+        e = "sha256:" + "88" * 32
+        u = self._version("R1", None, e, "2025-04-01", 61.0)                  # R1, organisation not found
+        n = self._version("R2", None, e, "2025-04-01", 62.0)                  # another report of the same file
+        a = self._version("R1", "2099000008", e, "2025-04-01", 63.0)          # R1 again, organisation found
+        held = self._version("R0", "2099000003", e, "2025-04-01", 50.0)       # the file's first report
+        for order in itertools.permutations([u, n, a]):
+            d = _tmp()
+            with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:
+                st.load_record(held)
+                for rec in order:
+                    st.load_record(rec)
+                rows = st.evaluations()
+            self.assertEqual(len(rows), 3, [r["quality_score"] for r in rows])     # R0, R1 and R2
+            self.assertIn(62.0, [r["quality_score"] for r in rows])
+            r1 = [r["quality_score"] for r in rows if r["quality_score"] in (61.0, 63.0)]
+            self.assertEqual(len(r1), 1)
+        d = _tmp()
+        with AnalyticsStore(d / "a.sqlite", d / "k.key", create_key=True) as st:   # nothing but the file to go by
+            st.load_record(held)
+            st.load_record(self._version("R3", None, e, "2025-04-01", 71.0))
+            st.load_record(self._version("R4", None, e, "2025-04-01", 72.0))
+            self.assertEqual(sorted(r["quality_score"] for r in st.evaluations()), [50.0, 71.0, 72.0])
+            no_number = _record("", ambak="2099000004", q=80.0)
+            no_number["source"] = {"file_hash": e}
+            st.load_record(no_number)                                          # every key held by another report
+            again = dict(no_number, quality_score=81.0)
+            _, outcome = st.load_record(again)                                 # found again by its own key
+            self.assertEqual(outcome, "replaced")
+            self.assertEqual(sorted(r["quality_score"] for r in st.evaluations()), [50.0, 71.0, 72.0, 81.0])
+
     def test_the_later_version_is_kept_whatever_the_order(self):
         march = self._version("R/9", "2099000007", "sha256:" + "66" * 32, "2025-03-01", 60.0)
         june = self._version("R/9", "2099000007", "sha256:" + "77" * 32, "2025-06-01", 85.0)
