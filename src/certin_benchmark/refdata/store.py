@@ -131,18 +131,24 @@ class ReferenceData:
 
     # ---- CVE List ------------------------------------------------------------------
     def cve_state(self, cve_id: str, as_of: _dt.date) -> str:
-        """published, rejected (on or before the date), reserved, or unknown."""
+        """The state of the CVE on the date, from the record's dates: rejected (on or before the date); published
+        (on or before the date, including a CVE rejected later); reserved (but not yet published); or unknown (not in
+        the CVE List, or not yet on that date)."""
         r = self.db.execute("SELECT * FROM cve_list WHERE cve_id = ?", (cve_id,)).fetchone()
         if not r:
             return "unknown"
         d = as_of.isoformat()
-        if (r["state"] or "").upper() == "REJECTED":
-            if r["date_rejected"] and r["date_rejected"][:10] > d:
-                return "published"   # rejected after the reference date is accepted
+        state = (r["state"] or "").upper()
+        pub, rej, res = ((r[k] or "")[:10] for k in ("date_published", "date_rejected", "date_reserved"))
+        if state == "REJECTED" and (not rej or rej <= d):
             return "rejected"
-        if (r["state"] or "").upper() == "PUBLISHED":
-            return "published"
-        return "reserved"
+        if pub and pub <= d:
+            return "published"   # including a CVE rejected after the reference date
+        if state == "PUBLISHED" and not pub:
+            return "published"   # a record giving no publication date
+        if res and res <= d:
+            return "reserved"    # reserved but not yet published on that date
+        return "unknown"         # not yet in the CVE List on that date
 
     # ---- KEV ---------------------------------------------------------------------------
     def kev_added(self, cve_id: str) -> _dt.date | None:

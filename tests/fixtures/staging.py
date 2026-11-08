@@ -127,8 +127,12 @@ def make_staging(root: Path, epss_days: list[str] | None = None, seed: int = 7) 
     cl.mkdir()
     for cid, state in (("CVE-2021-41773", "PUBLISHED"), ("CVE-2021-42013", "PUBLISHED"), ("CVE-2023-0001", "PUBLISHED"),
                        ("CVE-2020-99999", "REJECTED")):
-        rec = {"cveMetadata": {"cveId": cid, "state": state, "datePublished": "2021-10-05T08:40:12.000Z",
-                               "dateReserved": "2021-09-29T00:00:00.000Z",
+        # a rejected CVE is published before it is rejected (here in 2019; rejected 2021-01-01)
+        rec = {"cveMetadata": {"cveId": cid, "state": state,
+                               "datePublished": "2019-05-01T00:00:00.000Z" if state == "REJECTED" else
+                               "2021-10-05T08:40:12.000Z",
+                               "dateReserved": "2019-04-01T00:00:00.000Z" if state == "REJECTED" else
+                               "2021-09-29T00:00:00.000Z",
                                "dateRejected": "2021-01-01T00:00:00.000Z" if state == "REJECTED" else None},
                "containers": {"cna": {"metrics": [{"other": {"type": "unknown", "content": {"text": "important"}}}]},
                               "adp": [{"problemTypes": [{"descriptions": [{"cweId": "CWE-22", "type": "CWE"}]}]}]}}
