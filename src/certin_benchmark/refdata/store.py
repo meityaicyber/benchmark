@@ -113,15 +113,19 @@ class ReferenceData:
         r = self.db.execute("SELECT max(package_date) AS p FROM cve_cwe WHERE cve_id = ? AND assigner = 'nvd' "
                             "AND package_date <= ?", (cve_id, d)).fetchone()
         pkg = r["p"] if r else None
+        later = False
         if pkg is None:
             r = self.db.execute("SELECT min(package_date) AS p FROM cve_cwe WHERE cve_id = ? AND assigner = 'nvd'",
                                 (cve_id,)).fetchone()
             pkg = r["p"] if r else None
+            later = pkg is not None
         nvd_rows = self.db.execute("SELECT cwe_id FROM cve_cwe WHERE cve_id = ? AND assigner = 'nvd' AND package_date = ?",
                                    (cve_id, pkg)).fetchall() if pkg else []
         nvd = sorted({x["cwe_id"] for x in nvd_rows if x["cwe_id"] is not None})
         if nvd:
-            return nvd, "nvd"
+            # An assignment recorded only after the reference date is applied where no earlier one is held (a package
+            # built without NVD's history records assignments from its own date), and the source says so
+            return nvd, (f"nvd (as recorded on {pkg}, after the reference date)" if later else "nvd")
         rows = self.db.execute("SELECT cwe_id, assigner FROM cve_cwe WHERE cve_id = ?", (cve_id,)).fetchall()
         for assigner in ("cna", "adp"):
             ids = sorted({r["cwe_id"] for r in rows if r["assigner"] == assigner and r["cwe_id"] is not None})

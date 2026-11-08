@@ -110,3 +110,13 @@ class KevMembership(unittest.TestCase):
         rd = package({"kev": [("CVE-2021-41773", "2021-11-03")]}, extensions=False)
         self.assertTrue(rd.kev_known("CVE-2021-41773", D("2021-11-03")))
         self.assertFalse(rd.kev_known("CVE-2021-41773", D("2021-11-02")))
+
+
+class NvdCweAfterTheDate(unittest.TestCase):
+    """Q7: an NVD CWE assignment recorded only after the reference date is named as such in the record."""
+
+    def test_disclosed(self):
+        rd = package({"cve_cwe": [("CVE-2021-41773", 22, "nvd", "2026-06-17")]})
+        self.assertEqual(rd.assigned_cwes("CVE-2021-41773", D("2026-07-09")), ([22], "nvd"))
+        self.assertEqual(rd.assigned_cwes("CVE-2021-41773", D("2021-10-20")),
+                         ([22], "nvd (as recorded on 2026-06-17, after the reference date)"))
