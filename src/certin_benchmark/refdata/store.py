@@ -106,6 +106,17 @@ class ReferenceData:
             return NvdScore(float(r["score"]), r["vector"], r["source"] == "history", r["valid_from"])
         return None
 
+    def nvd_unscored_reason(self, cve_id: str, version: str, as_of: _dt.date) -> str:
+        """Why nvd_cvss gives no value on the date: NVD had no value of its own of that version then (where the
+        package records NVD's coverage of each CVE, kdb_nvd_cve), or its value then is not known."""
+        if self._has_table("kdb_nvd_cve"):
+            r = self.db.execute("SELECT first_state_at FROM kdb_nvd_cve WHERE cve_id = ?", (cve_id,)).fetchone()
+            if r is None:
+                return f"{cve_id} is not in NVD"
+            if r["first_state_at"] and as_of.isoformat() >= r["first_state_at"][:10]:
+                return f"NVD had no CVSS {version} value of its own for {cve_id} on {as_of} (a CNA's score is not NVD's)"
+        return f"NVD's CVSS {version} value as at {as_of} is not known from the Reference Data Package"
+
     def assigned_cwes(self, cve_id: str, as_of: _dt.date | None = None) -> tuple[list[int], str | None]:
         """CWE assigned by NVD as at the date (latest package on or before it; the earliest package where
         the date precedes it), or by the CVE Numbering Authority where NVD has assigned none."""

@@ -40,8 +40,9 @@ def _cvss_check(ctx, chk, label, reported, version, cves, when):
     vals = [rd.nvd_cvss(c, version, when) for c in cves]
     vals = [v for v in vals if v is not None]
     if not vals:
-        chk.add(f"{label} CVSS accuracy", None, f"NVD's CVSS {version} value as at {when} is not known "
-                                                f"from the Reference Data Package")
+        why = rd.nvd_unscored_reason(cves[0], version, when) if len(cves) == 1 else \
+            f"no NVD CVSS {version} value as at {when} for {', '.join(cves)}"
+        chk.add(f"{label} CVSS accuracy", None, why)
         return None
     auth = max(vals, key=lambda v: v.score)
     rep = as_float(reported)

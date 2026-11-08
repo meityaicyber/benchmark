@@ -147,3 +147,19 @@ class CweHierarchyAsAtDate(unittest.TestCase):
     def test_package_without_every_release(self):
         rd = package({"cwe_parent": [(22, 706)]}, extensions=False)
         self.assertEqual(rd.cwe_parents(22, D("2021-06-01")), {706})
+
+
+class NoNvdValue(unittest.TestCase):
+    """Q7 record: 'NVD had no score' and 'NVD's score then is not known' are told apart (both not evaluable)."""
+
+    def test_reasons(self):
+        rd = package({"kdb_nvd_cve": [("CVE-2026-100360", "2026-10-30T09:00:00Z", "Awaiting Analysis",
+                                       "2026-10-30T10:00:00Z", "2026-10-30T10:00:00Z", "feed", None)]})
+        self.assertIsNone(rd.nvd_cvss("CVE-2026-100360", "4.0", D("2026-11-05")))
+        self.assertIn("NVD had no CVSS 4.0 value of its own", rd.nvd_unscored_reason("CVE-2026-100360", "4.0", D("2026-11-05")))
+        self.assertIn("is not known", rd.nvd_unscored_reason("CVE-2026-100360", "4.0", D("2026-10-01")))
+        self.assertIn("is not in NVD", rd.nvd_unscored_reason("CVE-2099-0001", "3.1", D("2026-10-01")))
+
+    def test_package_without_coverage(self):
+        rd = package({}, extensions=False)
+        self.assertIn("is not known", rd.nvd_unscored_reason("CVE-2026-100360", "4.0", D("2026-11-05")))
