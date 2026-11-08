@@ -163,3 +163,27 @@ class NoNvdValue(unittest.TestCase):
     def test_package_without_coverage(self):
         rd = package({}, extensions=False)
         self.assertIn("is not known", rd.nvd_unscored_reason("CVE-2026-100360", "4.0", D("2026-11-05")))
+
+
+class SourceFreshness(unittest.TestCase):
+    """Section 11.4: an evaluation is designated where a source's data is older than the maximum, even in a new
+    package (a source carried forward)."""
+
+    def test_stale_source_named(self):
+        rd = package({}, sources={"nvd": {"status": "included", "retrieved_at": "2026-11-06T05:00:00+00:00"},
+                                  "kev": {"status": "carried_forward", "retrieved_at": "2026-10-01T05:00:00+00:00",
+                                          "last_success_at": "2026-10-01T06:00:00+00:00"},
+                                  "epss": {"status": "unavailable"},
+                                  "empanelment": {"status": "included", "retrieved_at": "2026-01-01"}})
+        stale = rd.stale_sources(D("2026-11-08"), 14)
+        self.assertEqual([(s["source"], s["age_days"], s["status"]) for s in stale], [("kev", 38, "carried_forward")])
+        self.assertEqual(rd.stale_sources(D("2026-10-10"), 14), [])
+
+    def test_engine_designates_the_evaluation(self):
+        from helpers import sample
+        from certin_benchmark import BenchmarkEngine
+        rd = package({}, sources={"kev": {"status": "carried_forward", "retrieved_at": "2026-09-01T05:00:00+00:00"}})
+        rec = BenchmarkEngine(refdata=rd).evaluate(sample(), evaluated_on=D("2026-11-08"))
+        self.assertEqual(rec.reference_data["stale_sources"][0]["source"], "kev")
+        self.assertIn("kev retrieved 68 days before evaluation", rec.reference_data["designation"])
+        self.assertTrue(any("kev retrieved 68 days" in w for w in rec.warnings))

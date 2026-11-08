@@ -73,6 +73,26 @@ class ReferenceData:
         s = self.manifest.get("sources", {}).get(source)
         return bool(s) and s.get("status") in ("included", "carried_forward")
 
+    EXTERNAL_SOURCES = ("nvd", "nvd_history", "cve_list", "epss", "kev", "cwe")
+
+    def stale_sources(self, on: _dt.date, max_age_days: int) -> list[dict]:
+        """External sources whose data was last retrieved successfully more than max_age_days before the date: the
+        manifest's last_success_at where it gives one (certin-kdb), else retrieved_at."""
+        out = []
+        for name in self.EXTERNAL_SOURCES:
+            s = self.manifest.get("sources", {}).get(name) or {}
+            if s.get("status") not in ("included", "carried_forward"):
+                continue
+            when = s.get("last_success_at") or s.get("retrieved_at")
+            try:
+                day = _dt.date.fromisoformat(str(when)[:10])
+            except ValueError:
+                continue
+            age = (on - day).days
+            if age > max_age_days:
+                out.append({"source": name, "status": s.get("status"), "retrieved": str(when), "age_days": age})
+        return out
+
     def describe(self, on: _dt.date | None = None) -> dict:
         return {
             "package_id": self.id,
