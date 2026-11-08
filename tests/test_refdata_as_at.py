@@ -81,3 +81,32 @@ class CveState(unittest.TestCase):
 
     def test_not_in_the_cve_list(self):
         self.assertEqual(self.rd.cve_state("CVE-2099-0001", D("2024-06-01")), "unknown")
+
+
+class KevMembership(unittest.TestCase):
+    """Q7: an entry CISA removed was in KEV on the dates it was listed (handover Section 7)."""
+
+    def test_removed_entry(self):
+        rd = package({"kev": [("CVE-2021-41773", "2021-11-03")],
+                      "kdb_kev_entry": [("CVE-2025-4664", "2025-05-15", "2025.05.15", "2025.06.06", "2025.06.09",
+                                         "2025-06-09", None)],
+                      "kdb_kev_interval": [("CVE-2025-4664", "2025-05-15", "2025.05.15", "2025-05-15", "2025.06.09",
+                                            "2025-06-09")]})
+        self.assertFalse(rd.kev_known("CVE-2025-4664", D("2025-05-14")))
+        self.assertTrue(rd.kev_known("CVE-2025-4664", D("2025-05-20")))
+        self.assertFalse(rd.kev_known("CVE-2025-4664", D("2025-06-09")))
+        self.assertTrue(rd.kev_known("CVE-2021-41773", D("2025-06-09")))
+
+    def test_removed_and_listed_again(self):
+        rd = package({"kev": [("CVE-2024-1111", "2024-01-05")],
+                      "kdb_kev_interval": [("CVE-2024-1111", "2024-01-05", "2025.01.30", "2025-01-30", "2025.03.01",
+                                            "2025-03-01"),
+                                           ("CVE-2024-1111", "2024-01-05", "2025.06.01", "2025-06-01", None, None)]})
+        self.assertTrue(rd.kev_known("CVE-2024-1111", D("2024-06-01")))        # before the history held
+        self.assertFalse(rd.kev_known("CVE-2024-1111", D("2025-04-01")))
+        self.assertTrue(rd.kev_known("CVE-2024-1111", D("2025-06-01")))
+
+    def test_package_without_the_intervals(self):
+        rd = package({"kev": [("CVE-2021-41773", "2021-11-03")]}, extensions=False)
+        self.assertTrue(rd.kev_known("CVE-2021-41773", D("2021-11-03")))
+        self.assertFalse(rd.kev_known("CVE-2021-41773", D("2021-11-02")))

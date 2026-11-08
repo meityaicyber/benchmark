@@ -153,11 +153,26 @@ class ReferenceData:
     # ---- KEV ---------------------------------------------------------------------------
     def kev_added(self, cve_id: str) -> _dt.date | None:
         r = self.db.execute("SELECT date_added FROM kev WHERE cve_id = ?", (cve_id,)).fetchone()
+        if not r and self._has_table("kdb_kev_entry"):       # an entry CISA has since removed from the catalogue
+            r = self.db.execute("SELECT date_added FROM kdb_kev_entry WHERE cve_id = ?", (cve_id,)).fetchone()
         return _dt.date.fromisoformat(r["date_added"][:10]) if r and r["date_added"] else None
 
     def kev_known(self, cve_id: str, as_of: _dt.date) -> bool:
+        """In KEV on the date: added on or before it and, where the package records the catalogues' membership
+        (kdb_kev_interval), not removed by CISA on or before it without being listed again."""
         d = self.kev_added(cve_id)
-        return d is not None and d <= as_of
+        if d is None or d > as_of:
+            return False
+        if self._has_table("kdb_kev_interval"):
+            spans = self.db.execute("SELECT from_date, to_date FROM kdb_kev_interval WHERE cve_id = ? "
+                                    "ORDER BY from_date, rowid", (cve_id,)).fetchall()
+            day = as_of.isoformat()
+            for i, s in enumerate(spans):
+                gap_from = (s["to_date"] or "")[:10]
+                gap_to = spans[i + 1]["from_date"][:10] if i + 1 < len(spans) else None
+                if gap_from and gap_from <= day and (gap_to is None or day < gap_to):
+                    return False
+        return True
 
     # ---- EPSS ------------------------------------------------------------------------
     def _epss_day(self, day: _dt.date) -> EpssDay | None:
