@@ -247,10 +247,33 @@ class ReferenceData:
             return False, f"deprecated on {r['deprecated_on']}"
         return True, r["name"] or ""
 
-    def cwe_parents(self, cwe_id: int) -> set[int]:
+    def _cwe_release_in_force(self, as_of: _dt.date | None) -> str | None:
+        """The CWE release in force on the date (the latest released on or before it; of releases made the same day,
+        the higher version; the earliest held for an earlier date), where the package holds every release's
+        relations (kdb_cwe_parent). None: use the latest release's relations (cwe_parent)."""
+        if as_of is None or not self._has_table("kdb_cwe_parent") or not self._has_table("kdb_cwe_release"):
+            return None
+        rels = self.db.execute("SELECT version, release_date FROM kdb_cwe_release").fetchall()
+        if not rels:
+            return None
+        prior = [r for r in rels if (r["release_date"] or "") <= as_of.isoformat()]
+        key = lambda r: (r["release_date"] or "", tuple(int(x) for x in r["version"].split(".") if x.isdigit()))
+        return (max(prior, key=key) if prior else min(rels, key=key))["version"]
+
+    def cwe_parents(self, cwe_id: int, as_of: _dt.date | None = None) -> set[int]:
+        """Direct ChildOf parents in view 1000, in the release in force on the date where the package holds every
+        release's relations, else in the latest release."""
+        v = self._cwe_release_in_force(as_of)
+        if v:
+            return {r["parent"] for r in self.db.execute(
+                "SELECT parent FROM kdb_cwe_parent WHERE version = ? AND child = ?", (v, cwe_id))}
         return {r["parent"] for r in self.db.execute("SELECT parent FROM cwe_parent WHERE child = ?", (cwe_id,))}
 
-    def cwe_children(self, cwe_id: int) -> set[int]:
+    def cwe_children(self, cwe_id: int, as_of: _dt.date | None = None) -> set[int]:
+        v = self._cwe_release_in_force(as_of)
+        if v:
+            return {r["child"] for r in self.db.execute(
+                "SELECT child FROM kdb_cwe_parent WHERE version = ? AND parent = ?", (v, cwe_id))}
         return {r["child"] for r in self.db.execute("SELECT child FROM cwe_parent WHERE parent = ?", (cwe_id,))}
 
     def cwe_name(self, cwe_id: int) -> str | None:

@@ -120,3 +120,30 @@ class NvdCweAfterTheDate(unittest.TestCase):
         self.assertEqual(rd.assigned_cwes("CVE-2021-41773", D("2026-07-09")), ([22], "nvd"))
         self.assertEqual(rd.assigned_cwes("CVE-2021-41773", D("2021-10-20")),
                          ([22], "nvd (as recorded on 2026-06-17, after the reference date)"))
+
+
+class CweHierarchyAsAtDate(unittest.TestCase):
+    """Q7: parent and child in the CWE hierarchy of the release in force on the reference date."""
+
+    def setUp(self):
+        self.rd = package({"cwe_parent": [(22, 706)],
+                           "kdb_cwe_release": [("4.4", "2021-03-15", "catalogue", None, None, "6.4", 0, 0, 0, 0),
+                                               ("4.21", "2026-10-28", "catalogue", None, None, "7.4", 0, 0, 0, 0),
+                                               ("5.0", "2026-10-28", "catalogue", None, None, "8.0", 0, 0, 0, 0)],
+                           "kdb_cwe_parent": [("4.4", 22, 668), ("4.4", 22, 706), ("4.21", 22, 706),
+                                              ("5.0", 22, 706)]})
+
+    def test_parents_of_the_release_in_force(self):
+        self.assertEqual(self.rd.cwe_parents(22, D("2021-06-01")), {668, 706})
+        self.assertEqual(self.rd.cwe_parents(22, D("2026-11-01")), {706})
+        self.assertEqual(self.rd.cwe_parents(22), {706})                       # no date: the latest release
+        self.assertEqual(self.rd.cwe_children(668, D("2021-06-01")), {22})
+        self.assertEqual(self.rd.cwe_children(668, D("2026-11-01")), set())
+
+    def test_release_in_force(self):
+        self.assertEqual(self.rd._cwe_release_in_force(D("2026-10-28")), "5.0")   # two releases that day
+        self.assertEqual(self.rd._cwe_release_in_force(D("2020-01-01")), "4.4")   # before the first held
+
+    def test_package_without_every_release(self):
+        rd = package({"cwe_parent": [(22, 706)]}, extensions=False)
+        self.assertEqual(rd.cwe_parents(22, D("2021-06-01")), {706})

@@ -79,8 +79,9 @@ def _epss_check(ctx, chk, label, reported, cves, day):
     return vals
 
 
-def _related(rd, a: int, b: int) -> bool:
-    return a == b or b in rd.cwe_parents(a) or b in rd.cwe_children(a)
+def _related(rd, a: int, b: int, when=None) -> bool:
+    """Equal, or a direct parent or child in view 1000 of the CWE release in force on the reference date."""
+    return a == b or b in rd.cwe_parents(a, when) or b in rd.cwe_children(a, when)
 
 
 def evaluate(ctx: Context):
@@ -160,7 +161,7 @@ def evaluate(ctx: Context):
             if not assigned:
                 chk.add("agreement of CWE", None, "no CWE assigned by NVD or the CNA")
             else:
-                ok = any(_related(rd, r, a) for r in reported for a in assigned)
+                ok = any(_related(rd, r, a, when) for r in reported for a in assigned)
                 chk.add("agreement of CWE", ok, f"reported {reported}; assigned by {'/'.join(sorted(set(assigned.values())))} "
                                                 f"{sorted(assigned)}")
         elif when:
