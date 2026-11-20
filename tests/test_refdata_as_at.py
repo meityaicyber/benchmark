@@ -106,6 +106,17 @@ class KevMembership(unittest.TestCase):
         self.assertFalse(rd.kev_known("CVE-2024-1111", D("2025-04-01")))
         self.assertTrue(rd.kev_known("CVE-2024-1111", D("2025-06-01")))
 
+    def test_listed_again_with_a_new_date_added(self):
+        # the current catalogue carries the second listing's dateAdded; the first listing still counts
+        rd = package({"kev": [("CVE-2024-2222", "2025-06-01")],
+                      "kdb_kev_interval": [("CVE-2024-2222", "2024-01-05", "2025.01.30", "2025-01-30", "2025.03.01",
+                                            "2025-03-01"),
+                                           ("CVE-2024-2222", "2025-06-01", "2025.06.01", "2025-06-01", None, None)]})
+        self.assertFalse(rd.kev_known("CVE-2024-2222", D("2024-01-04")))
+        self.assertTrue(rd.kev_known("CVE-2024-2222", D("2024-06-01")))
+        self.assertFalse(rd.kev_known("CVE-2024-2222", D("2025-04-01")))
+        self.assertTrue(rd.kev_known("CVE-2024-2222", D("2025-06-01")))
+
     def test_package_without_the_intervals(self):
         rd = package({"kev": [("CVE-2021-41773", "2021-11-03")]}, extensions=False)
         self.assertTrue(rd.kev_known("CVE-2021-41773", D("2021-11-03")))

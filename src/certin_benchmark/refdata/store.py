@@ -196,6 +196,13 @@ class ReferenceData:
         """In KEV on the date: added on or before it and, where the package records the catalogues' membership
         (kdb_kev_interval), not removed by CISA on or before it without being listed again."""
         d = self.kev_added(cve_id)
+        if d is not None and self._has_table("kdb_kev_interval"):
+            # an entry CISA removed and listed again may carry a later dateAdded in the current catalogue; it was
+            # first in KEV from the dateAdded of its first listing
+            first = self.db.execute("SELECT min(date_added) FROM kdb_kev_interval WHERE cve_id = ?",
+                                    (cve_id,)).fetchone()[0]
+            if first and _dt.date.fromisoformat(first[:10]) < d:
+                d = _dt.date.fromisoformat(first[:10])
         if d is None or d > as_of:
             return False
         if self._has_table("kdb_kev_interval"):
