@@ -72,8 +72,9 @@ class InstalledDefaults(unittest.TestCase):
 
     def test_installed_copy_reads_the_bundled_files(self):
         # an installed wheel holds the package alone, with the copies setup.py bundles into it; here it sits in a
-        # folder named src beside a pyproject.toml, which must not be taken for a source checkout
-        project = tmpdir()
+        # folder named src beside a pyproject.toml, which must not be taken for a source checkout. The folder is
+        # resolved as the Suite resolves its own location (on macOS the temporary folder /var is /private/var)
+        project = tmpdir().resolve()
         (project / "pyproject.toml").write_text("[project]\nname = 'other'\n")
         site = project / "src"
         shutil.copytree(ROOT / "src" / "certin_benchmark", site / "certin_benchmark",
