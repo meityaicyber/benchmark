@@ -17,6 +17,7 @@ import unittest
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -30,6 +31,7 @@ from helpers import EVAL_DATE, HERE, ROOT, criterion, refdata, sample, scripted_
 from certin_benchmark import BenchmarkEngine
 from certin_benchmark.cli import main
 from certin_benchmark.evaluators import BackendUnavailable, FunctionBackend, ModelCall, backend_from_config
+from certin_benchmark.evaluators import backends as backends_mod
 from certin_benchmark.evaluators.backends import PNG_SIGNATURE
 from certin_benchmark.evaluators.sampling import SampledEvaluator
 
@@ -319,6 +321,52 @@ class EvaluateCommand(ServerTestCase):
             a.pop("reference_data", None), b.pop("reference_data", None)
             self.assertEqual([c["score"] for c in a["criteria"]], [c["score"] for c in b["criteria"]])
         self.server = MockServer()
+
+
+class DroppedConnections(ServerTestCase):
+    """A connection refused or reset before any reply is tried again; the seed makes the reply the same."""
+
+    def setUp(self):
+        super().setUp()
+        pause = mock.patch.object(backends_mod.OpenAICompatibleBackend, "RETRY_PAUSES", (0, 0, 0))
+        pause.start()
+        self.addCleanup(pause.stop)
+        self.real_urlopen = backends_mod.urllib.request.urlopen
+
+    def failing(self, *errors):
+        errors = list(errors)
+
+        def urlopen(req, timeout):
+            if errors:
+                raise errors.pop(0)
+            return self.real_urlopen(req, timeout=timeout)
+        return mock.patch.object(backends_mod.urllib.request, "urlopen", side_effect=urlopen)
+
+    def test_a_reset_or_refused_connection_is_tried_again(self):
+        with self.failing(ConnectionResetError(54, "Connection reset by peer"),
+                          backends_mod.urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))) as m:
+            reply = self.backend().complete(ModelCall("system", "user", 7, 0.7))
+        self.assertIn("level", reply)
+        self.assertEqual(m.call_count, 3)
+        self.assertEqual(len(self.server.bodies), 1)
+
+    def test_it_is_tried_a_bounded_number_of_times(self):
+        resets = [ConnectionResetError(54, "Connection reset by peer")] * 4
+        with self.failing(*resets) as m, self.assertRaisesRegex(BackendUnavailable, "reset by peer"):
+            self.backend().complete(ModelCall("system", "user", 7, 0.7))
+        self.assertEqual(m.call_count, 4)
+
+    def test_a_timeout_is_not_tried_again(self):
+        with self.failing(TimeoutError("timed out")) as m, self.assertRaisesRegex(BackendUnavailable, "timed out"):
+            self.backend().complete(ModelCall("system", "user", 7, 0.7))
+        self.assertEqual(m.call_count, 1)
+
+    def test_an_error_the_server_returns_is_not_tried_again(self):
+        self.server.mode = "limit1"
+        image = png_file(self.tmp)
+        with self.assertRaisesRegex(BackendUnavailable, "HTTP 400"):
+            self.backend().complete(ModelCall("system", "user", 7, 0.7, str(image), [str(image)]))
+        self.assertEqual(len(self.server.bodies), 1)
 
 
 class MissingCaptureDate(unittest.TestCase):
