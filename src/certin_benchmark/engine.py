@@ -121,6 +121,16 @@ class BenchmarkEngine:
                 rdinfo["designation"] = (f"evaluated against a package {rdinfo['age_days']} days old, older than the "
                                          f"configured maximum of {cfg.max_package_age_days} days")
                 ctx.warnings.append(rdinfo["designation"])
+            # A new package may carry a source forward from an older one (its publisher unreachable): each external
+            # source's data is dated by its last successful retrieval and held to the same maximum (Section 11.4)
+            stale = self.refdata.stale_sources(on, cfg.max_package_age_days)
+            if stale:
+                rdinfo["stale_sources"] = stale
+                note = ("reference data older than the configured maximum of "
+                        f"{cfg.max_package_age_days} days: " + "; ".join(f"{s['source']} retrieved {s['age_days']} days "
+                                                                         f"before evaluation ({s['status']})" for s in stale))
+                rdinfo["designation"] = "; ".join(filter(None, [rdinfo.get("designation"), note]))
+                ctx.warnings.append(note)
         else:
             rdinfo = {"package_id": None, "note": "no Reference Data Package supplied; reference data checks not evaluable"}
             ctx.warnings.append(rdinfo["note"])

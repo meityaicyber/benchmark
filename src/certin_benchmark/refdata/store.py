@@ -73,6 +73,26 @@ class ReferenceData:
         s = self.manifest.get("sources", {}).get(source)
         return bool(s) and s.get("status") in ("included", "carried_forward")
 
+    EXTERNAL_SOURCES = ("nvd", "nvd_history", "cve_list", "epss", "kev", "cwe")
+
+    def stale_sources(self, on: _dt.date, max_age_days: int) -> list[dict]:
+        """External sources whose data was last retrieved successfully more than max_age_days before the date: the
+        manifest's last_success_at where it gives one (certin-kdb), else retrieved_at."""
+        out = []
+        for name in self.EXTERNAL_SOURCES:
+            s = self.manifest.get("sources", {}).get(name) or {}
+            if s.get("status") not in ("included", "carried_forward"):
+                continue
+            when = s.get("last_success_at") or s.get("retrieved_at")
+            try:
+                day = _dt.date.fromisoformat(str(when)[:10])
+            except ValueError:
+                continue
+            age = (on - day).days
+            if age > max_age_days:
+                out.append({"source": name, "status": s.get("status"), "retrieved": str(when), "age_days": age})
+        return out
+
     def describe(self, on: _dt.date | None = None) -> dict:
         return {
             "package_id": self.id,
@@ -106,6 +126,17 @@ class ReferenceData:
             return NvdScore(float(r["score"]), r["vector"], r["source"] == "history", r["valid_from"])
         return None
 
+    def nvd_unscored_reason(self, cve_id: str, version: str, as_of: _dt.date) -> str:
+        """Why nvd_cvss gives no value on the date: NVD had no value of its own of that version then (where the
+        package records NVD's coverage of each CVE, kdb_nvd_cve), or its value then is not known."""
+        if self._has_table("kdb_nvd_cve"):
+            r = self.db.execute("SELECT first_state_at FROM kdb_nvd_cve WHERE cve_id = ?", (cve_id,)).fetchone()
+            if r is None:
+                return f"{cve_id} is not in NVD"
+            if r["first_state_at"] and as_of.isoformat() >= r["first_state_at"][:10]:
+                return f"NVD had no CVSS {version} value of its own for {cve_id} on {as_of} (a CNA's score is not NVD's)"
+        return f"NVD's CVSS {version} value as at {as_of} is not known from the Reference Data Package"
+
     def assigned_cwes(self, cve_id: str, as_of: _dt.date | None = None) -> tuple[list[int], str | None]:
         """CWE assigned by NVD as at the date (latest package on or before it; the earliest package where
         the date precedes it), or by the CVE Numbering Authority where NVD has assigned none."""
@@ -113,15 +144,19 @@ class ReferenceData:
         r = self.db.execute("SELECT max(package_date) AS p FROM cve_cwe WHERE cve_id = ? AND assigner = 'nvd' "
                             "AND package_date <= ?", (cve_id, d)).fetchone()
         pkg = r["p"] if r else None
+        later = False
         if pkg is None:
             r = self.db.execute("SELECT min(package_date) AS p FROM cve_cwe WHERE cve_id = ? AND assigner = 'nvd'",
                                 (cve_id,)).fetchone()
             pkg = r["p"] if r else None
+            later = pkg is not None
         nvd_rows = self.db.execute("SELECT cwe_id FROM cve_cwe WHERE cve_id = ? AND assigner = 'nvd' AND package_date = ?",
                                    (cve_id, pkg)).fetchall() if pkg else []
         nvd = sorted({x["cwe_id"] for x in nvd_rows if x["cwe_id"] is not None})
         if nvd:
-            return nvd, "nvd"
+            # An assignment recorded only after the reference date is applied where no earlier one is held (a package
+            # built without NVD's history records assignments from its own date), and the source says so
+            return nvd, (f"nvd (as recorded on {pkg}, after the reference date)" if later else "nvd")
         rows = self.db.execute("SELECT cwe_id, assigner FROM cve_cwe WHERE cve_id = ?", (cve_id,)).fetchall()
         for assigner in ("cna", "adp"):
             ids = sorted({r["cwe_id"] for r in rows if r["assigner"] == assigner and r["cwe_id"] is not None})
@@ -131,27 +166,55 @@ class ReferenceData:
 
     # ---- CVE List ------------------------------------------------------------------
     def cve_state(self, cve_id: str, as_of: _dt.date) -> str:
-        """published, rejected (on or before the date), reserved, or unknown."""
+        """The state of the CVE on the date, from the record's dates: rejected (on or before the date); published
+        (on or before the date, including a CVE rejected later); reserved (but not yet published); or unknown (not in
+        the CVE List, or not yet on that date)."""
         r = self.db.execute("SELECT * FROM cve_list WHERE cve_id = ?", (cve_id,)).fetchone()
         if not r:
             return "unknown"
         d = as_of.isoformat()
-        if (r["state"] or "").upper() == "REJECTED":
-            if r["date_rejected"] and r["date_rejected"][:10] > d:
-                return "published"   # rejected after the reference date is accepted
+        state = (r["state"] or "").upper()
+        pub, rej, res = ((r[k] or "")[:10] for k in ("date_published", "date_rejected", "date_reserved"))
+        if state == "REJECTED" and (not rej or rej <= d):
             return "rejected"
-        if (r["state"] or "").upper() == "PUBLISHED":
-            return "published"
-        return "reserved"
+        if pub and pub <= d:
+            return "published"   # including a CVE rejected after the reference date
+        if state == "PUBLISHED" and not pub:
+            return "published"   # a record giving no publication date
+        if res and res <= d:
+            return "reserved"    # reserved but not yet published on that date
+        return "unknown"         # not yet in the CVE List on that date
 
     # ---- KEV ---------------------------------------------------------------------------
     def kev_added(self, cve_id: str) -> _dt.date | None:
         r = self.db.execute("SELECT date_added FROM kev WHERE cve_id = ?", (cve_id,)).fetchone()
+        if not r and self._has_table("kdb_kev_entry"):       # an entry CISA has since removed from the catalogue
+            r = self.db.execute("SELECT date_added FROM kdb_kev_entry WHERE cve_id = ?", (cve_id,)).fetchone()
         return _dt.date.fromisoformat(r["date_added"][:10]) if r and r["date_added"] else None
 
     def kev_known(self, cve_id: str, as_of: _dt.date) -> bool:
+        """In KEV on the date: added on or before it and, where the package records the catalogues' membership
+        (kdb_kev_interval), not removed by CISA on or before it without being listed again."""
         d = self.kev_added(cve_id)
-        return d is not None and d <= as_of
+        if d is not None and self._has_table("kdb_kev_interval"):
+            # an entry CISA removed and listed again may carry a later dateAdded in the current catalogue; it was
+            # first in KEV from the dateAdded of its first listing
+            first = self.db.execute("SELECT min(date_added) FROM kdb_kev_interval WHERE cve_id = ?",
+                                    (cve_id,)).fetchone()[0]
+            if first and _dt.date.fromisoformat(first[:10]) < d:
+                d = _dt.date.fromisoformat(first[:10])
+        if d is None or d > as_of:
+            return False
+        if self._has_table("kdb_kev_interval"):
+            spans = self.db.execute("SELECT from_date, to_date FROM kdb_kev_interval WHERE cve_id = ? "
+                                    "ORDER BY from_date, rowid", (cve_id,)).fetchall()
+            day = as_of.isoformat()
+            for i, s in enumerate(spans):
+                gap_from = (s["to_date"] or "")[:10]
+                gap_to = spans[i + 1]["from_date"][:10] if i + 1 < len(spans) else None
+                if gap_from and gap_from <= day and (gap_to is None or day < gap_to):
+                    return False
+        return True
 
     # ---- EPSS ------------------------------------------------------------------------
     def _epss_day(self, day: _dt.date) -> EpssDay | None:
@@ -222,10 +285,33 @@ class ReferenceData:
             return False, f"deprecated on {r['deprecated_on']}"
         return True, r["name"] or ""
 
-    def cwe_parents(self, cwe_id: int) -> set[int]:
+    def _cwe_release_in_force(self, as_of: _dt.date | None) -> str | None:
+        """The CWE release in force on the date (the latest released on or before it; of releases made the same day,
+        the higher version; the earliest held for an earlier date), where the package holds every release's
+        relations (kdb_cwe_parent). None: use the latest release's relations (cwe_parent)."""
+        if as_of is None or not self._has_table("kdb_cwe_parent") or not self._has_table("kdb_cwe_release"):
+            return None
+        rels = self.db.execute("SELECT version, release_date FROM kdb_cwe_release").fetchall()
+        if not rels:
+            return None
+        prior = [r for r in rels if (r["release_date"] or "") <= as_of.isoformat()]
+        key = lambda r: (r["release_date"] or "", tuple(int(x) for x in r["version"].split(".") if x.isdigit()))
+        return (max(prior, key=key) if prior else min(rels, key=key))["version"]
+
+    def cwe_parents(self, cwe_id: int, as_of: _dt.date | None = None) -> set[int]:
+        """Direct ChildOf parents in view 1000, in the release in force on the date where the package holds every
+        release's relations, else in the latest release."""
+        v = self._cwe_release_in_force(as_of)
+        if v:
+            return {r["parent"] for r in self.db.execute(
+                "SELECT parent FROM kdb_cwe_parent WHERE version = ? AND child = ?", (v, cwe_id))}
         return {r["parent"] for r in self.db.execute("SELECT parent FROM cwe_parent WHERE child = ?", (cwe_id,))}
 
-    def cwe_children(self, cwe_id: int) -> set[int]:
+    def cwe_children(self, cwe_id: int, as_of: _dt.date | None = None) -> set[int]:
+        v = self._cwe_release_in_force(as_of)
+        if v:
+            return {r["child"] for r in self.db.execute(
+                "SELECT child FROM kdb_cwe_parent WHERE version = ? AND parent = ?", (v, cwe_id))}
         return {r["child"] for r in self.db.execute("SELECT child FROM cwe_parent WHERE parent = ?", (cwe_id,))}
 
     def cwe_name(self, cwe_id: int) -> str | None:

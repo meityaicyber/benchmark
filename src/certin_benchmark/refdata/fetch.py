@@ -124,11 +124,18 @@ def extract_nvd_history(mirror: Path, staging: Path, since: _dt.date | None = No
     One pass over the history lists, for each synchronisation in date order, the record files it changed
     and their new contents (blob ids); `git cat-file --batch` then streams those contents. A line is written
     each time NVD's own CVSS value of a CVE changes (or is removed), with the record's lastModified time,
-    which is when NVD made the change. Output: staging/nvd_history/nvd_states.jsonl.gz and SOURCE.json.
+    which is when NVD made the change, and the time of the synchronisation that first showed it ("synced").
+    NVD sometimes changes a record's values without a new lastModified (for example, in December 2024 and
+    December 2025 it re-typed CNA metrics in bulk). Such a state is written with "silent": its lastModified is
+    no later than one the mirror had already shown for that record, so the change is dated when the mirror
+    first showed it, never earlier (build.py, _load_nvd_history). Output: staging/nvd_history/nvd_states.jsonl.gz
+    and SOURCE.json.
 
     Read from a date (`since`), the history continues an earlier package's. A record that opens the window without
     a value of some version is then written with "absent_at_window_start": the window cannot tell whether NVD
     removed a value it held before, so the build decides, from the earlier package (build.py, _load_nvd_history).
+    The first version of a record read in the window is never judged "silent": the lastModified the mirror
+    showed before the window is not read.
     """
     mirror = Path(mirror)
     out_dir = Path(staging) / "nvd_history"
@@ -160,7 +167,8 @@ def extract_nvd_history(mirror: Path, staging: Path, since: _dt.date | None = No
     if proc.returncode:
         raise RuntimeError("git log failed on the NVD mirror")
     last: dict[tuple[str, str], tuple] = {}
-    written = 0
+    seen_modified: dict[str, str] = {}     # the latest lastModified the mirror has shown of each record
+    written = silent_written = 0
     with tempfile.NamedTemporaryFile("w", delete=False, suffix=".txt") as ids:
         ids.write("\n".join(b for _, b in changes) + "\n")
     partial = states.with_name(f".{states.name}.part")
@@ -183,6 +191,11 @@ def extract_nvd_history(mirror: Path, staging: Path, since: _dt.date | None = No
                 cid = (cve.get("id") or "").upper()
                 modified = cve.get("lastModified")
                 metrics = nvd_metrics(cve)
+                held = seen_modified.get(cid)
+                # values changed without a lastModified later than one already shown: NVD did not date the change
+                silent = bool(held and modified and modified <= held)
+                if modified and (not held or modified > held):
+                    seen_modified[cid] = modified
                 for version in ("3.0", "3.1", "4.0"):
                     now = metrics.get(version, (None, None))
                     prev = last.get((cid, version))
@@ -194,6 +207,9 @@ def extract_nvd_history(mirror: Path, staging: Path, since: _dt.date | None = No
                              "last_modified": modified, "synced": synced}
                     if opens_absent:
                         state["absent_at_window_start"] = True
+                    if silent:
+                        state["silent"] = True
+                        silent_written += 1
                     out.write(json.dumps(state) + "\n")
                     written += 1
             cat.stdout.close()
@@ -203,7 +219,8 @@ def extract_nvd_history(mirror: Path, staging: Path, since: _dt.date | None = No
         head, head_date = _git("log", "-1", "--format=%H %cI", cwd=mirror).split()
         info = {"url": DISTRIBUTION["nvd_mirror_git"], "commit": head, "commit_date": head_date,
                 "first_sync": first, "since": since.isoformat() if since else None,
-                "record_versions_read": len(changes), "states_written": written}
+                "record_versions_read": len(changes), "states_written": written,
+                "states_without_new_last_modified": silent_written}
         done = True
     finally:
         out.close()

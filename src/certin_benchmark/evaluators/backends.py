@@ -14,8 +14,10 @@ enable_thinking false), which a short rating reply cannot hold.
 from __future__ import annotations
 
 import base64
+import http.client
 import io
 import json
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -79,6 +81,13 @@ def image_data_url(path: str | Path) -> str:
     return f"data:{mime};base64,{base64.b64encode(data).decode()}"
 
 
+def _connection_dropped(exc: BaseException) -> bool:
+    """A connection refused, reset or closed before the reply: not a timeout, not an error the server returned."""
+    reason = getattr(exc, "reason", exc) if isinstance(exc, urllib.error.URLError) else exc
+    return isinstance(reason, (ConnectionResetError, ConnectionRefusedError, ConnectionAbortedError, BrokenPipeError,
+                               http.client.RemoteDisconnected))
+
+
 class OpenAICompatibleBackend:
     """Chat completions against a local server; the seed is passed per request.
 
@@ -104,18 +113,28 @@ class OpenAICompatibleBackend:
         self.mm_processor_kwargs = dict(mm_processor_kwargs or {})
         self.concurrency = max(1, int(concurrency or 1))
 
+    # A connection refused, reset or closed before any reply (a server's full listen queue, a restart) is tried again
+    # after these pauses: the request carries its seed, so the reply is the one the first attempt would have had.
+    # A timeout, or a reply that is an error, is not tried again.
+    RETRY_PAUSES = (0.5, 1.0, 2.0)
+
     def _open(self, req: urllib.request.Request, timeout: float) -> Any:
         if self.api_key:
             req.add_header("Authorization", f"Bearer {self.api_key}")
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read()
-        except urllib.error.HTTPError as exc:
-            # the server's own explanation (for example a limit on images per request) is kept with the error
-            detail = exc.read().decode("utf-8", errors="replace").strip()[:500]
-            raise BackendUnavailable(f"{req.full_url} returned HTTP {exc.code}: {detail or exc.reason}") from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise BackendUnavailable(f"{req.full_url}: {exc}") from exc
+        for attempt in range(len(self.RETRY_PAUSES) + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    raw = resp.read()
+                break
+            except urllib.error.HTTPError as exc:
+                # the server's own explanation (for example a limit on images per request) is kept with the error
+                detail = exc.read().decode("utf-8", errors="replace").strip()[:500]
+                raise BackendUnavailable(f"{req.full_url} returned HTTP {exc.code}: {detail or exc.reason}") from exc
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                if attempt < len(self.RETRY_PAUSES) and _connection_dropped(exc):
+                    time.sleep(self.RETRY_PAUSES[attempt])
+                    continue
+                raise BackendUnavailable(f"{req.full_url}: {exc}") from exc
         try:
             return json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):

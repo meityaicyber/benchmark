@@ -40,8 +40,9 @@ def _cvss_check(ctx, chk, label, reported, version, cves, when):
     vals = [rd.nvd_cvss(c, version, when) for c in cves]
     vals = [v for v in vals if v is not None]
     if not vals:
-        chk.add(f"{label} CVSS accuracy", None, f"NVD's CVSS {version} value as at {when} is not known "
-                                                f"from the Reference Data Package")
+        why = rd.nvd_unscored_reason(cves[0], version, when) if len(cves) == 1 else \
+            f"no NVD CVSS {version} value as at {when} for {', '.join(cves)}"
+        chk.add(f"{label} CVSS accuracy", None, why)
         return None
     auth = max(vals, key=lambda v: v.score)
     rep = as_float(reported)
@@ -79,8 +80,9 @@ def _epss_check(ctx, chk, label, reported, cves, day):
     return vals
 
 
-def _related(rd, a: int, b: int) -> bool:
-    return a == b or b in rd.cwe_parents(a) or b in rd.cwe_children(a)
+def _related(rd, a: int, b: int, when=None) -> bool:
+    """Equal, or a direct parent or child in view 1000 of the CWE release in force on the reference date."""
+    return a == b or b in rd.cwe_parents(a, when) or b in rd.cwe_children(a, when)
 
 
 def evaluate(ctx: Context):
@@ -160,7 +162,7 @@ def evaluate(ctx: Context):
             if not assigned:
                 chk.add("agreement of CWE", None, "no CWE assigned by NVD or the CNA")
             else:
-                ok = any(_related(rd, r, a) for r in reported for a in assigned)
+                ok = any(_related(rd, r, a, when) for r in reported for a in assigned)
                 chk.add("agreement of CWE", ok, f"reported {reported}; assigned by {'/'.join(sorted(set(assigned.values())))} "
                                                 f"{sorted(assigned)}")
         elif when:
