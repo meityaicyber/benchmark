@@ -445,15 +445,28 @@ class PackageBuilder:
                 cwes[cid] = nvd_cwes(cve)
                 self._raw("nvd", cid, cve)
         pkg = self.prepared_on.isoformat()
+        prev_records = self._previous_nvd_records()
+        silent = 0
         for (cid, version), (score, vector, modified) in latest.items():
             prev = self.db.execute(
                 "SELECT score, vector FROM nvd_cvss WHERE cve_id = ? AND version = ? AND source = 'feed' "
                 "ORDER BY package_date DESC LIMIT 1", (cid, version)).fetchone()
             if prev and prev[0] == score and prev[1] == vector:
                 continue  # unchanged since the previous package: the earlier row continues to apply
-            # valid_from: the record's lastModified date, from which NVD's value has held unchanged
+            # valid_from: the record's lastModified date, from which NVD's value has held unchanged. Where NVD
+            # changed the value without a new lastModified (the previous package's record has the same one or a
+            # later one), the change is dated when first seen, this package, never at a date the previous
+            # package showed the earlier value for (the mirror's history, if loaded, may date it more closely)
+            valid_from = modified or pkg
+            if prev and modified:
+                was = self._record_modified(prev_records, cid)
+                if was and self._nvd_current[cid][0] <= was:
+                    valid_from = pkg
+                    silent += 1
             self.db.execute("INSERT INTO nvd_cvss VALUES (?, ?, ?, ?, ?, ?, 'feed')",
-                            (cid, version, score, vector, pkg, modified or pkg))
+                            (cid, version, score, vector, pkg, valid_from))
+        if prev_records is not None:
+            prev_records.close()
         for cid, ws in cwes.items():
             last = self.db.execute("SELECT max(package_date) FROM cve_cwe WHERE cve_id = ? AND assigner = 'nvd'",
                                    (cid,)).fetchone()[0]
@@ -465,7 +478,30 @@ class PackageBuilder:
             for w in ws or {None}:
                 self.db.execute("INSERT INTO cve_cwe VALUES (?, ?, 'nvd', ?)", (cid, w, pkg))
         return {"records": count, "publisher_version": latest_modified, "retrieved_at": _mtime(feeds[-1]),
-                "sha256_basis": getattr(self, "_hash_basis", None)}
+                "sha256_basis": getattr(self, "_hash_basis", None),
+                "changed_without_new_last_modified": silent}
+
+    def _previous_nvd_records(self) -> sqlite3.Connection | None:
+        """The previous package's database, read-only, where it holds NIST's records (publisher_record)."""
+        prev_db = self.previous / "reference.sqlite" if self.previous else None
+        if not prev_db or not prev_db.exists():
+            return None
+        prev = sqlite3.connect(f"file:{prev_db}?mode=ro", uri=True)
+        if prev.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'publisher_record'").fetchone():
+            return prev
+        prev.close()
+        return None
+
+    @staticmethod
+    def _record_modified(prev: sqlite3.Connection | None, cid: str) -> str | None:
+        """The lastModified of a CVE's NVD record in the previous package, or None."""
+        if prev is None:
+            return None
+        r = prev.execute("SELECT record FROM publisher_record WHERE source = 'nvd' AND key = ?", (cid,)).fetchone()
+        try:
+            return json.loads(zlib.decompress(r[0])).get("lastModified") if r else None
+        except (zlib.error, ValueError):
+            return None
 
     # Largest share of compared records on which the mirror may differ from NIST's feed
     MIRROR_MAX_MISMATCH = 0.001
@@ -473,7 +509,10 @@ class PackageBuilder:
     def _load_nvd_history(self) -> dict:
         """NVD's earlier values, from the mirror's git history (fetch.extract_nvd_history).
 
-        Each line states a value NVD held from the record's lastModified time. Before use, the mirror's
+        Each line states a value NVD held from the record's lastModified time, or, where NVD changed the record
+        without a new lastModified ("silent"), from the synchronisation that first showed it: dating such a change
+        at lastModified would replace the earlier value over months in which NVD still published it. A feed row
+        of this package holding that value is dated from then too. Before use, the mirror's
         latest value of every CVE whose lastModified equals that in NIST's feed is compared with NIST's
         feed; if more than MIRROR_MAX_MISMATCH of them differ, the source fails verification.
         """
@@ -484,6 +523,8 @@ class PackageBuilder:
         info = json.loads((d / "SOURCE.json").read_text()) if (d / "SOURCE.json").exists() else {}
         rows = []
         final: dict[tuple[str, str], tuple] = {}
+        silent_final: dict[tuple[str, str], tuple] = {}     # latest states dated after their lastModified
+        observed = 0
         with gzip.open(states, "rt", encoding="utf-8") as fh:
             for line in fh:
                 r = json.loads(line)
@@ -491,6 +532,9 @@ class PackageBuilder:
                 modified = r.get("last_modified") or ""
                 if not modified:
                     continue
+                dated = modified[:10]
+                if r.get("silent") and r.get("synced"):
+                    dated = max(dated, _utc_day(r["synced"]))
                 if r.get("absent_at_window_start"):
                     # History read from a date: the record opens the window without a value of this version. That
                     # ends a value only where the earlier packages held one (their rows, carried into this one; not
@@ -499,11 +543,16 @@ class PackageBuilder:
                         "SELECT score FROM nvd_cvss WHERE cve_id = ? AND version = ? "
                         "AND coalesce(valid_from, package_date) <= ? AND (source = 'history' OR package_date < ?) "
                         "ORDER BY coalesce(valid_from, package_date) DESC, source = 'feed' DESC, package_date DESC "
-                        "LIMIT 1", (cid, version, modified[:10], self.prepared_on.isoformat())).fetchone()
+                        "LIMIT 1", (cid, version, dated, self.prepared_on.isoformat())).fetchone()
                     if not held or held[0] is None:
                         continue
-                rows.append((cid, version, r.get("score"), r.get("vector"), modified[:10]))
+                rows.append((cid, version, r.get("score"), r.get("vector"), dated))
                 final[(cid, version)] = (modified, r.get("score"), r.get("vector"))
+                if dated != modified[:10]:
+                    silent_final[(cid, version)] = (dated, r.get("score"), r.get("vector"))
+                    observed += 1
+                else:
+                    silent_final.pop((cid, version), None)
         current = getattr(self, "_nvd_current", None)
         check = {"compared": 0, "differ": 0, "examples": []}
         if current:
@@ -523,8 +572,14 @@ class PackageBuilder:
         else:
             check["note"] = "NIST's feed unavailable in this preparation; mirror not checked"
         self.db.executemany("INSERT INTO nvd_cvss VALUES (?, ?, ?, ?, NULL, ?, 'history')", rows)
+        # The feed row this build added for such a value took the record's lastModified; it is dated as the history is
+        self.db.executemany(
+            "UPDATE nvd_cvss SET valid_from = ? WHERE cve_id = ? AND version = ? AND source = 'feed' "
+            "AND package_date = ? AND valid_from < ? AND score IS ? AND vector IS ?",
+            [(day, cid, version, self.prepared_on.isoformat(), day, score, vector)
+             for (cid, version), (day, score, vector) in silent_final.items()])
         total = self.db.execute("SELECT count(*) FROM nvd_cvss WHERE source = 'history'").fetchone()[0]
-        return {"records": total, "added": len(rows), "retrieved_at": _mtime(states),
+        return {"records": total, "added": len(rows), "dated_when_observed": observed, "retrieved_at": _mtime(states),
                 "publisher_version": info.get("commit_date"), "mirror": info, "check_against_nist_feed": check}
 
     # ---- CVE List ------------------------------------------------------------------
@@ -927,6 +982,14 @@ class PackageBuilder:
         days = sorted(n[len("epss_scores-"):-len(".csv.gz")] for n in by_name)
         return {"records": len(files), "files": files, "first_day": days[0], "last_day": days[-1],
                 "model_versions": sorted(set(models.values())), "publisher_version": days[-1]}
+
+
+def _utc_day(timestamp: str) -> str:
+    """The UTC date of an ISO 8601 time (a git commit time may carry another zone)."""
+    t = _dt.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    if t.tzinfo:
+        t = t.astimezone(_dt.timezone.utc)
+    return t.date().isoformat()
 
 
 def _mtime(p: Path) -> str:
